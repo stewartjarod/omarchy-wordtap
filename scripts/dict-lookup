@@ -208,7 +208,7 @@ fetch_cached() {
   if [[ -f "$file" && ! -L "$file" && -n "$("$FIND" "$file" -mtime -"$ttl_days" 2>/dev/null)" ]]; then
     printf '%s' "$(<"$file")"; return 0
   fi
-  if body="$("$CURL" -fsS --proto =https -A "WordTap (+https://github.com/stewartjarod/omarchy-wordtap)" --max-time 3 --max-filesize 8388608 -- "$url" 2>/dev/null)" && [[ -n "$body" ]]; then
+  if body="$("$CURL" -fsS --proto =https -A "WordTap/0.1 (Omarchy shell plugin)" --max-time 3 --max-filesize 8388608 -- "$url" 2>/dev/null)" && [[ -n "$body" ]]; then
     tmp="$("$MKTEMP" -- "$dir/.fetch.XXXXXX" 2>/dev/null)" && printf '%s' "$body" >"$tmp" && "$MV" -f -- "$tmp" "$file"
     printf '%s' "$body"; return 0
   fi
