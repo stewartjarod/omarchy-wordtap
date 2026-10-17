@@ -21,7 +21,7 @@ grim -g "$x0,$y0 ${W}x${H}" "$tmp/shot.png" 2>/dev/null || exit 0
 # Tesseract wants dark text on light; invert dark themes.
 mean="$(magick "$tmp/shot.png" -colorspace gray -format '%[fx:mean]' info:)"
 negate=(); awk -v m="$mean" 'BEGIN { exit !(m < 0.5) }' && negate=(-negate)
-magick "$tmp/shot.png" -colorspace gray "${negate[@]}" -resize "$(( SCALE * 100 ))%" "$tmp/ocr.png"
+magick "$tmp/shot.png" -colorspace gray "${negate[@]}" -resize "$(( W * SCALE ))x$(( H * SCALE ))!" "$tmp/ocr.png"
 
 # Pick the word box containing the cursor, else the nearest one within reach.
 word="$(OMP_THREAD_LIMIT=1 tesseract "$tmp/ocr.png" - --psm 11 tsv 2>/dev/null | awk -F'\t' \

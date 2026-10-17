@@ -182,6 +182,7 @@ def find_pads(names):
 
 def main():
     cfg, stamp = load_config(), config_stamp()
+    parent = os.getppid()
     sel = selectors.DefaultSelector()
     pads = {}
     last_fire = last_scan = 0.0
@@ -201,6 +202,10 @@ def main():
         # Rescan for config edits and hot-plugged touchpads (Bluetooth, KVMs).
         if time.monotonic() - last_scan > 3:
             last_scan = time.monotonic()
+            # Exit with the shell: if it died without stopping us, a restarted
+            # shell starts a new watcher and two would fire on every tap.
+            if os.getppid() != parent:
+                return
             if config_stamp() != stamp:
                 cfg, stamp = load_config(), config_stamp()
                 log(f"config {cfg}")
