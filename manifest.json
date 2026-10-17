@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "stewartjarod.wordtap",
+  "name": "Wordtap",
+  "version": "0.0.0",
+  "author": "stewartjarod",
+  "license": "MIT",
+  "description": "Three-finger tap any word for a macOS-style popup: definitions, word parts, etymology (Wiktionary) and Wikipedia summaries, themed to Omarchy.",
+  "kinds": [
+    "service"
+  ],
+  "entryPoints": {
+    "service": "Service.qml"
+  }
+}
