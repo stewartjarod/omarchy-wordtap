@@ -21,7 +21,7 @@ test("manifest.json has a valid SemVer version and a namespaced id", () => {
 
 test("manifest kinds and entry points agree, and the files exist", () => {
   const m = man()
-  const want = { "bar-widget": ["barWidget", "barWidget"], service: ["service", null] }
+  const want = { "bar-widget": ["barWidget", "barWidget"], service: ["service", null], overlay: ["overlay", null] }
   for (const k of m.kinds) {
     assert.ok(want[k], "known kind " + k)
     const file = m.entryPoints[want[k][0]]

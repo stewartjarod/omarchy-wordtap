@@ -1,0 +1,13 @@
+{
+  "$comment": "Shipped defaults. Override any of these in ~/.config/wordtap/config.json (only the keys you change). sources: which dictionaries to show, top to bottom; ids match providers/<id>.json. tap: the touchpad gesture that looks up the word under the pointer.",
+  "sources": ["wiktionary", "wikipedia", "webster1913"],
+  "tap": {
+    "enabled": true,
+    "fingers": 3,
+    "maxMs": 250,
+    "maxMoveMm": 2.5,
+    "cooldownMs": 400,
+    "devices": [],
+    "debug": false
+  }
+}

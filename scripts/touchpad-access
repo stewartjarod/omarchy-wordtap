@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Give your login session read access to touchpads, so Word Tap can see
+# three-finger taps while tap-to-click stays off.
+#
+#   touchpad-access status    # can the current user read every touchpad?
+#   touchpad-access enable    # add the udev rule (asks for your password via polkit)
+#   touchpad-access disable   # remove it again
+#
+# The rule tags only devices udev classifies as touchpads (ID_INPUT_TOUCHPAD=1)
+# with "uaccess", which grants the user of the active seat an ACL on them.
+# Keyboards and every other input device keep their root:input permissions.
+set -euo pipefail
+
+rule_file=/etc/udev/rules.d/70-wordtap-touchpad-uaccess.rules
+rule='SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_TOUCHPAD}=="1", TAG+="uaccess"'
+
+touchpads() {
+  local ev dev
+  for ev in /sys/class/input/event*; do
+    dev="$(<"$ev/dev")"
+    grep -qx 'E:ID_INPUT_TOUCHPAD=1' "/run/udev/data/c$dev" 2>/dev/null && echo "/dev/input/${ev##*/}"
+  done
+}
+
+status() {
+  local n=0 ok=0 t
+  while read -r t; do
+    [[ -n "$t" ]] || continue
+    n=$((n + 1))
+    if [[ -r "$t" ]]; then ok=$((ok + 1)); echo "readable    $t"; else echo "no access   $t"; fi
+  done < <(touchpads)
+  (( n > 0 )) || { echo "no touchpads found"; return 1; }
+  [[ -f "$rule_file" ]] && echo "rule: $rule_file" || echo "rule: not installed"
+  (( ok == n ))
+}
+
+case "${1:-status}" in
+  status) status ;;
+  enable)
+    printf '# Word Tap: let the active seat user read touchpads (three-finger tap lookup).\n%s\n' "$rule" |
+      pkexec sh -c "cat > '$rule_file' && chmod 644 '$rule_file' && udevadm control --reload && udevadm trigger --subsystem-match=input --action=change"
+    sleep 1
+    status
+    ;;
+  disable)
+    pkexec sh -c "rm -f '$rule_file' && udevadm control --reload && udevadm trigger --subsystem-match=input --action=change"
+    echo "removed $rule_file"
+    ;;
+  *) echo "usage: ${0##*/} [status|enable|disable]" >&2; exit 2 ;;
+esac

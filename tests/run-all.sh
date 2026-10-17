@@ -7,7 +7,7 @@
 #   4. token existence                  (tests/tokens.js: every Color./Style. token exists in the shell)
 #   5. Omarchy minimum version note     (OMARCHY_MIN_VERSION vs the installed shell)
 #   5b. marketplace pre-flight          (omarchy plugin validate + the marketplace's own security scanner)
-#   6. node --test tests/               (pure-model tests, version hygiene, commit hook)
+#   6. node --test tests/*.test.js             (pure-model tests, version hygiene, commit hook)
 #   7. qmllint over every .qml
 # The live checks are NOT here: they need the running shell. See tests/smoke.sh.
 #
@@ -98,8 +98,8 @@ else
 fi
 
 # ------------------------------------------------------------------ node
-echo "== node --test tests/"
-if node --test tests/ > "$TMP/node.out" 2>&1; then
+echo "== node --test tests/*.test.js"
+if node --test tests/*.test.js > "$TMP/node.out" 2>&1; then
   grep -E '^ℹ (tests|pass|fail) ' "$TMP/node.out"
 else
   grep -E '^✖|^ℹ (tests|pass|fail) ' "$TMP/node.out" | head -n 40

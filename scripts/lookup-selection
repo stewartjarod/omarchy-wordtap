@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Word Tap: look up the highlighted text (derived from Look Up by keegan-sucks, MIT).
+#
+# Bind this to a key in ~/.config/hypr/bindings.lua. When pressed it reads the
+# Wayland *primary* selection (the text you have highlighted, left untouched in
+# your normal clipboard) and opens the Word Tap popup on that word — macOS-style.
+# With nothing selected it just toggles an empty popup you can type into.
+#
+# Requires: wl-paste (wl-clipboard) and omarchy-shell (both ship with Omarchy).
+set -euo pipefail
+
+# Run under a fixed, trusted PATH and resolve every helper to an absolute path, so a
+# hostile entry planted earlier in the user's PATH can never shadow the tools we call.
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/share/omarchy/bin
+pin() {  # <command> -> absolute path (or fail loudly)
+  local p; p="$(command -v -- "$1" 2>/dev/null || true)"
+  [[ -n "$p" && -x "$p" ]] || { printf 'wordtap: required command not found: %s\n' "$1" >&2; exit 127; }
+  printf '%s' "$p"
+}
+WL_PASTE="$(pin wl-paste)"
+HEAD="$(pin head)"
+TR="$(pin tr)"
+SED="$(pin sed)"
+JQ="$(pin jq)"
+OMARCHY_SHELL="$(pin omarchy-shell)"
+
+plugin_id="stewartjarod.wordtap"
+
+# Grab the primary selection as plain text, size-capped, without disturbing the
+# clipboard. Never fail the shortcut if there is no selection.
+selection="$("$WL_PASTE" --primary --no-newline --type text/plain 2>/dev/null | "$HEAD" -c 400 || true)"
+[[ -n "$selection" ]] || selection="$("$WL_PASTE" --primary --no-newline 2>/dev/null | "$HEAD" -c 400 || true)"
+
+# Normalize whitespace so a multi-line selection becomes a clean query.
+selection="$(printf '%s' "$selection" | "$TR" '\n\t' '  ' | "$SED" -e 's/^ *//' -e 's/ *$//')"
+
+if [[ -n "$selection" ]]; then
+  payload="$("$JQ" -cn --arg q "$selection" '{query:$q}')"
+  "$OMARCHY_SHELL" -q shell summon "$plugin_id" "$payload"
+else
+  # Nothing highlighted: toggle a blank popup to type into.
+  "$OMARCHY_SHELL" -q shell toggle "$plugin_id" '{}'
+fi

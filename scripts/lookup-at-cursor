@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Word Tap: read the word under the mouse pointer off the screen (OCR) and open
+# it in the popup. Nothing is clicked or selected in the app underneath.
+# Run by scripts/tap-watch on a three-finger tap; also fine to bind to a key.
+#
+# Requires: grim, imagemagick (magick), tesseract + tesseract-data-eng, jq.
+set -uo pipefail
+
+plugin_id="stewartjarod.wordtap"
+W=500 H=70 SCALE=3   # capture box around the cursor (px) and OCR upscale
+MAX_DIST=10          # how far (screen px) the cursor may be from a word
+
+tmp="$(mktemp -d)"; trap 'rm -rf -- "$tmp"' EXIT
+
+# Optional "x y" args look at that screen point instead (for testing).
+if (( $# == 2 )); then cx=$1 cy=$2; else read -r cx cy < <(hyprctl cursorpos | tr -d ,); fi
+x0=$(( cx - W / 2 )); (( x0 < 0 )) && x0=0
+y0=$(( cy - H / 2 )); (( y0 < 0 )) && y0=0
+grim -g "$x0,$y0 ${W}x${H}" "$tmp/shot.png" 2>/dev/null || exit 0
+
+# Tesseract wants dark text on light; invert dark themes.
+mean="$(magick "$tmp/shot.png" -colorspace gray -format '%[fx:mean]' info:)"
+negate=(); awk -v m="$mean" 'BEGIN { exit !(m < 0.5) }' && negate=(-negate)
+magick "$tmp/shot.png" -colorspace gray "${negate[@]}" -resize "$(( SCALE * 100 ))%" "$tmp/ocr.png"
+
+# Pick the word box containing the cursor, else the nearest one within reach.
+word="$(OMP_THREAD_LIMIT=1 tesseract "$tmp/ocr.png" - --psm 11 tsv 2>/dev/null | awk -F'\t' \
+  -v px=$(( (cx - x0) * SCALE )) -v py=$(( (cy - y0) * SCALE )) -v max=$(( MAX_DIST * SCALE )) '
+  NR > 1 && $12 ~ /[[:alpha:]]/ && $11 > 40 {
+    l = $7; t = $8; r = $7 + $9; b = $8 + $10
+    dx = px < l ? l - px : (px > r ? px - r : 0)
+    dy = py < t ? t - py : (py > b ? py - b : 0)
+    d = dx + dy
+    if (d <= max && (best == "" || d < bd)) { bd = d; best = $12 }
+  }
+  END { print best }')"
+
+# Trim surrounding punctuation ("(word)," -> "word"), keep inner ' and -.
+word="$(sed -E "s/^[^[:alnum:]]+//; s/[^[:alnum:]]+$//" <<<"$word")"
+[[ -n "$word" ]] || exit 0
+
+omarchy-shell -q shell summon "$plugin_id" "$(jq -cn --arg q "$word" '{query:$q}')"

@@ -1,0 +1,250 @@
+#!/usr/bin/python3 -I
+"""Word Tap gesture watcher: run a lookup on a multi-finger touchpad tap.
+
+Started and stopped by Service.qml. Reads raw evdev events from touchpads
+(which needs read access: see scripts/touchpad-access) and runs
+scripts/lookup-at-cursor when N fingers touch and lift quickly without moving
+or clicking. Swipes and clickfinger presses are ignored because they move or
+click, so tap-to-click can stay off.
+
+Settings: the "tap" object of defaults.json, overridden by
+~/.config/wordtap/config.json; re-read automatically when either changes.
+
+Prints one JSON status line to stdout whenever the set of touchpads changes:
+  {"touchpads": <found>, "readable": <opened>}
+"""
+import json
+import os
+import selectors
+import struct
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+DEFAULTS = os.path.join(HERE, "..", "defaults.json")
+USER_CONFIG = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "wordtap", "config.json")
+COMMAND = [os.path.join(HERE, "lookup-at-cursor")]
+
+EV_KEY, EV_ABS = 0x01, 0x03
+BTN_LEFT, BTN_RIGHT, BTN_MIDDLE = 0x110, 0x111, 0x112
+BTN_TOUCH = 0x14A
+FINGER_TOOLS = {0x145: 1, 0x14D: 2, 0x14E: 3, 0x14F: 4, 0x148: 5}
+ABS_MT_SLOT, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TRACKING_ID = 0x2F, 0x35, 0x36, 0x39
+EVENT = struct.Struct("llHHi")
+
+
+def read_json(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def load_config():
+    tap = dict(read_json(DEFAULTS).get("tap") or {})
+    user = read_json(USER_CONFIG).get("tap")
+    if isinstance(user, dict):
+        tap.update(user)
+
+    def num(key, default, kind=float):
+        try:
+            return kind(tap.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    devices = tap.get("devices") or []
+    return {
+        "enabled": tap.get("enabled", True) is not False,
+        "fingers": num("fingers", 3, int),
+        "max_ms": num("maxMs", 250),
+        "max_move_mm": num("maxMoveMm", 2.5),
+        "cooldown_ms": num("cooldownMs", 400),
+        "devices": [str(d) for d in devices if str(d).strip()] if isinstance(devices, list) else [],
+        "debug": tap.get("debug") is True,
+    }
+
+
+def config_stamp():
+    stamp = []
+    for path in (DEFAULTS, USER_CONFIG):
+        try:
+            stamp.append(os.stat(path).st_mtime_ns)
+        except OSError:
+            stamp.append(None)
+    return stamp
+
+
+def units_per_mm(fd, code):
+    # EVIOCGABS(code): struct input_absinfo is six int32s; resolution is last.
+    import fcntl
+    req = (2 << 30) | (24 << 16) | (ord("E") << 8) | (0x40 + code)
+    try:
+        _, lo, hi, _, _, res = struct.unpack("6i", fcntl.ioctl(fd, req, bytes(24)))
+    except OSError:
+        return 1.0
+    return float(res) if res > 0 else max(hi - lo, 1) / 100.0
+
+
+class Pad:
+    def __init__(self, path, fd):
+        self.path, self.fd = path, fd
+        self.res_x = units_per_mm(fd, ABS_MT_POSITION_X)
+        self.res_y = units_per_mm(fd, ABS_MT_POSITION_Y)
+        self.slot = 0
+        self.pos = {}      # slot -> [x, y] of each finger currently down
+        self.reset()
+
+    def reset(self):
+        # Per-gesture stats only; slot positions persist because a frame's
+        # position events arrive before its BTN_TOUCH.
+        self.start = None
+        self.fingers = 0
+        self.clicked = False
+        self.moved = 0.0
+        self.origin = {s: tuple(p) for s, p in self.pos.items() if p and None not in p}
+
+    def track(self, code, value):
+        if code == ABS_MT_SLOT:
+            self.slot = value
+        elif code == ABS_MT_TRACKING_ID:
+            self.origin.pop(self.slot, None)
+            self.pos[self.slot] = [None, None] if value >= 0 else None
+        elif code in (ABS_MT_POSITION_X, ABS_MT_POSITION_Y):
+            p = self.pos.get(self.slot)
+            if p is None:
+                return
+            p[code - ABS_MT_POSITION_X] = value
+            if None in p:
+                return
+            o = self.origin.setdefault(self.slot, tuple(p))
+            dx, dy = (p[0] - o[0]) / self.res_x, (p[1] - o[1]) / self.res_y
+            self.moved = max(self.moved, (dx * dx + dy * dy) ** 0.5)
+
+    def feed(self, etype, code, value, now):
+        """Update gesture state; return the finished touch as a dict on lift."""
+        if etype == EV_ABS:
+            self.track(code, value)
+        elif etype != EV_KEY:
+            pass
+        elif code in FINGER_TOOLS and value:
+            self.fingers = max(self.fingers, FINGER_TOOLS[code])
+        elif code in (BTN_LEFT, BTN_RIGHT, BTN_MIDDLE) and value:
+            self.clicked = True
+        elif code == BTN_TOUCH and value:
+            self.reset()
+            self.start = now
+        elif code == BTN_TOUCH and not value and self.start is not None:
+            touch = {"fingers": self.fingers, "ms": (now - self.start) * 1000,
+                     "moved": self.moved, "clicked": self.clicked}
+            self.reset()
+            return touch
+        return None
+
+
+def is_tap(touch, cfg):
+    return (touch["fingers"] == cfg["fingers"] and not touch["clicked"]
+            and touch["ms"] <= cfg["max_ms"] and touch["moved"] <= cfg["max_move_mm"])
+
+
+def is_touchpad(event):
+    # udev's input_id builtin tags touchpads with ID_INPUT_TOUCHPAD=1.
+    try:
+        with open(f"/sys/class/input/{event}/dev") as f:
+            major, minor = f.read().strip().split(":")
+        with open(f"/run/udev/data/c{major}:{minor}") as f:
+            return "E:ID_INPUT_TOUCHPAD=1\n" in f.read()
+    except (OSError, ValueError):
+        return False
+
+
+def find_pads(names):
+    found = []
+    for ev in sorted(os.listdir("/dev/input")):
+        if not ev.startswith("event"):
+            continue
+        if names:
+            try:
+                with open(f"/sys/class/input/{ev}/device/name") as f:
+                    name = f.read().strip().lower()
+            except OSError:
+                continue
+            if not any(n.lower() in name for n in names):
+                continue
+        elif not is_touchpad(ev):
+            continue
+        found.append(f"/dev/input/{ev}")
+    return found
+
+
+def main():
+    cfg, stamp = load_config(), config_stamp()
+    sel = selectors.DefaultSelector()
+    pads = {}
+    last_fire = last_scan = 0.0
+    status = None
+
+    def log(msg):
+        if cfg["debug"]:
+            print(msg, file=sys.stderr, flush=True)
+
+    def drop(path):
+        pad = pads.pop(path)
+        sel.unregister(pad.fd)
+        os.close(pad.fd)
+        log(f"lost {path}")
+
+    while True:
+        # Rescan for config edits and hot-plugged touchpads (Bluetooth, KVMs).
+        if time.monotonic() - last_scan > 3:
+            last_scan = time.monotonic()
+            if config_stamp() != stamp:
+                cfg, stamp = load_config(), config_stamp()
+                log(f"config {cfg}")
+            wanted = set(find_pads(cfg["devices"])) if cfg["enabled"] else set()
+            for path in set(pads) - wanted:
+                drop(path)
+            for path in sorted(wanted - set(pads)):
+                try:
+                    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                except OSError as e:
+                    log(f"cannot open {path}: {e}")
+                    continue
+                pads[path] = Pad(path, fd)
+                sel.register(fd, selectors.EVENT_READ, path)
+                log(f"watching {path}")
+            now_status = {"enabled": cfg["enabled"], "touchpads": len(wanted), "readable": len(pads)}
+            if now_status != status:
+                status = now_status
+                print(json.dumps(status), flush=True)
+
+        for key, _ in sel.select(timeout=1):
+            pad = pads.get(key.data)
+            if pad is None:
+                continue
+            try:
+                data = os.read(pad.fd, EVENT.size * 64)
+            except BlockingIOError:
+                continue
+            except OSError:
+                drop(pad.path)
+                continue
+            for off in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _, _, etype, code, value = EVENT.unpack_from(data, off)
+                now = time.monotonic()
+                touch = pad.feed(etype, code, value, now)
+                if touch is None:
+                    continue
+                log("touch: fingers={fingers} ms={ms:.0f} moved={moved:.1f}mm clicked={clicked}".format(**touch))
+                if is_tap(touch, cfg) and (now - last_fire) * 1000 >= cfg["cooldown_ms"]:
+                    last_fire = now
+                    log("tap")
+                    subprocess.Popen(COMMAND, start_new_session=True, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL)
+
+
+if __name__ == "__main__":
+    main()

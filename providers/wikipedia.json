@@ -1,0 +1,8 @@
+{
+  "id": "wikipedia",
+  "name": "Wikipedia",
+  "kind": "wikipedia",
+  "base": "https://en.wikipedia.org/api/rest_v1/page/summary",
+  "cacheDays": 7,
+  "attribution": "Wikipedia (CC BY-SA 4.0), page summaries via the Wikimedia REST API."
+}
