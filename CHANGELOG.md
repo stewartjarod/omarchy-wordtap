@@ -6,4 +6,14 @@ All notable changes to this plugin are listed here. The format follows
 
 ## [Unreleased]
 
-[Unreleased]: https://github.com/stewartjarod/omarchy-wordtap/commits/HEAD
+## [0.1.0] - 2026-10-16
+
+### Added
+- three-finger tap word lookup with Wiktionary, Wikipedia and Webster's 1913
+
+### Fixed
+- pick the right word on scaled outputs and exit the watcher with the shell
+- **ci:** keep the repo URL out of curl calls and ignore unresolved Quickshell types in qmllint
+
+[Unreleased]: https://github.com/stewartjarod/omarchy-wordtap/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/stewartjarod/omarchy-wordtap/releases/tag/v0.1.0
