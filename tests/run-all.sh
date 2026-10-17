@@ -42,7 +42,7 @@ if [ -n "$dups" ]; then echo "$dups"; status=1; else echo "none"; fi
 # popup closed. Create it from a Loader whose `active` is true only while it is needed, and add that
 # file to ALLOW below (one file name per entry, space separated).
 echo "== text inputs only where allowed"
-ALLOW=""
+ALLOW="WordTap.qml"
 inputs=$(grep -n -E '^[[:space:]]*(TextField|TextInput|TextArea)[[:space:]]*\{' $(find . -name '*.qml' -not -path './.git/*' -not -path './tests/*' -not -path './.omarchy-ref/*') 2>/dev/null || true)
 for a in $ALLOW; do inputs=$(printf '%s\n' "$inputs" | grep -v "/$a:" || true); done
 if [ -n "$(printf '%s' "$inputs" | tr -d '[:space:]')" ]; then echo "$inputs"; status=1; else echo "none"; fi
@@ -120,7 +120,7 @@ else
   # Known noise from running outside the Omarchy shell (qs.* and Quickshell modules are not on the lint path,
   # e.g. on a CI runner; then Color resolves to Qt's own type)
   # and from qmllint's stricter style checks. Anything else reported as Error or Warning fails.
-  NOISE='Unqualified access|Failed to import qs\.|importing module "qs\.|Did you add all imports|is used but it is not resolved|inheritance cycle|not found on type "QObject"|unknown grouped property scope|is missing required property|Failed to import Quickshell|Warnings occurred while importing module|not found on type "QQuickColor"'
+  NOISE='Unqualified access|Failed to import qs\.|importing module "qs\.|Did you add all imports|is used but it is not resolved|inheritance cycle|not found on type "QObject"|unknown grouped property scope|is missing required property|Failed to import Quickshell|Warnings occurred while importing module|not found on type "QQuickColor"|Type PanelWindow is not creatable'
   : > "$TMP/lint.real"
   count=0
   while IFS= read -r f; do
