@@ -31,7 +31,8 @@ test("sqlite3 reads its SQL from stdin", () => {
 })
 
 test("curl reads its URL from a config on stdin", () => {
-  const calls = [...read("scripts/dict-lookup").matchAll(/"\$CURL"[^\n]*/g)].map((m) => m[0])
+  // A call may continue over several lines ("\" at the end of a line).
+  const calls = [...read("scripts/dict-lookup").matchAll(/"\$CURL"(?:[^\n]*\\\n)*[^\n]*/g)].map((m) => m[0])
   assert.ok(calls.length > 0)
   for (const c of calls) {
     assert.match(c, / -K - /, c)

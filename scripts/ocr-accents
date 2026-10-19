@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Word Tap: read accented letters (é ô ö ë ñ ø ł ß ...) off the screen.
+#
+#   ocr-accents enable    download Tesseract's Latin-script model (89 MB, once)
+#   ocr-accents disable   delete it
+#   ocr-accents status
+#
+# The English OCR that ships with Omarchy reads "schön" as "schon" and "Hôtel" as "Hotel".
+# Tesseract's Latin-script model knows the letters of every Latin-alphabet language; with it
+# installed, each tap also reads the word under the pointer with it and keeps its accents
+# when it is the same word (scripts/lookup-at-cursor). It is data, not code: one file from
+# tesseract-ocr/tessdata_fast, pinned to a commit and checked against its SHA-256.
+set -euo pipefail
+
+export PATH=/usr/local/bin:/usr/bin:/bin
+readonly COMMIT=87416418657359cb625c412a48b6e1d6d41c29bd
+readonly SHA256=6dbdaf8ecc6c40f025c2648bf3b3f3fbffe073e1fd2df2047fde2e2b2f020d53
+readonly URL="https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/$COMMIT/script/Latin.traineddata"
+
+dir="${XDG_DATA_HOME:-$HOME/.local/share}/wordtap/tessdata"
+model="$dir/Latin.traineddata"
+
+case "${1:-status}" in
+  enable)
+    if [[ -f "$model" ]] && sha256sum "$model" | grep -q "^$SHA256 "; then
+      echo "ocr-accents: already enabled ($model)"; exit 0
+    fi
+    [[ ! -L "$dir" ]] || { echo "ocr-accents: $dir is a symlink; refusing" >&2; exit 1; }
+    mkdir -p -- "$dir"
+    tmp="$(mktemp -- "$dir/.Latin.XXXXXX")"; trap 'rm -f -- "$tmp"' EXIT
+    echo "ocr-accents: downloading Tesseract's Latin-script model (89 MB)..."
+    curl -fL --proto =https --max-filesize 120000000 --progress-bar -o "$tmp" -- "$URL"
+    if ! sha256sum "$tmp" | grep -q "^$SHA256 "; then
+      echo "ocr-accents: checksum mismatch; nothing installed" >&2; exit 1
+    fi
+    chmod 644 -- "$tmp"
+    mv -f -- "$tmp" "$model"; trap - EXIT
+    echo "ocr-accents: enabled. Taps now read accented letters."
+    ;;
+  disable)
+    rm -f -- "$model"
+    rmdir -- "$dir" 2>/dev/null || true
+    echo "ocr-accents: disabled (model deleted)"
+    ;;
+  status)
+    if [[ -f "$model" ]]; then echo "enabled: $model"; else echo "disabled (run: ocr-accents enable)"; fi
+    ;;
+  *) echo "usage: ocr-accents enable|disable|status" >&2; exit 2 ;;
+esac

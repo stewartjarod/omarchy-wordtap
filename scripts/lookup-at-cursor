@@ -12,7 +12,7 @@
 #   lookup-at-cursor X Y SHOT.png < SEL   testing: SHOT.png stands in for the screen
 #                                         and SEL for the highlight; prints the query
 #
-# Requires: grim, imagemagick (magick), tesseract + tesseract-data-eng, wl-paste, jq.
+# Requires: grim, imagemagick (magick), tesseract + tesseract-data-eng, wl-paste, jq, iconv.
 set -uo pipefail
 # A UTF-8 locale, whatever the user's, so awk compares "Hôtel" letter by letter.
 export LC_ALL=C.UTF-8
@@ -48,14 +48,18 @@ else
 fi
 
 # OCR <image> in language <lang> and pick the word box containing the cursor, else the
-# nearest one within reach. Prints "<word>\t<its index in the line>\t<line>\t<confidence>",
-# the line being every word level with it, left to right.
+# nearest one within reach. Prints "<word>\t<its index in the line>\t<line>\t<confidence>\t<box>",
+# the line being every word level with it, left to right, and the box "left right" on screen. <image> covers the screen from
+# <ox>,<oy> (default: the capture box) at SCALE; <tessdata> is an extra model directory.
 pick() {
-  OMP_THREAD_LIMIT=1 tesseract "$1" - -l "$2" --psm 11 tsv 2>/dev/null | awk -F'\t' \
-    -v px=$(( (cx - x0) * SCALE )) -v py=$(( (cy - y0) * SCALE )) -v max=$(( MAX_DIST * SCALE )) '
+  local ox=${3:-$x0} oy=${4:-$y0} dirs=()
+  [[ -n "${5:-}" ]] && dirs=(--tessdata-dir "$5")
+  OMP_THREAD_LIMIT=1 tesseract "$1" - "${dirs[@]}" -l "$2" --psm 11 -c tessedit_create_tsv=1 2>/dev/null | awk -F'\t' \
+    -v px=$(( (cx - ox) * SCALE )) -v py=$(( (cy - oy) * SCALE )) -v max=$(( MAX_DIST * SCALE )) \
+    -v ox="$ox" -v scale="$SCALE" '
     # Every word counts as line context; only a confident one can be the tapped word.
     NR > 1 && $12 ~ /[[:alnum:]]/ && $11 >= 0 {
-      n++; L[n] = $7; T[n] = $8; B[n] = $8 + $10; X[n] = $12; C[n] = $11
+      n++; L[n] = $7; R[n] = $7 + $9; T[n] = $8; B[n] = $8 + $10; X[n] = $12; C[n] = $11
       if ($12 !~ /[[:alpha:]]/ || $11 <= 40) next
       l = $7; t = $8; r = $7 + $9; b = $8 + $10
       dx = px < l ? l - px : (px > r ? px - r : 0)
@@ -71,14 +75,15 @@ pick() {
       }
       m = asorti(k, s); line = ""
       for (j = 1; j <= m; j++) { line = line (j > 1 ? " " : "") X[k[s[j]]]; if (k[s[j]] == best) at = j }
-      print X[best] "\t" at "\t" line "\t" C[best]
+      print X[best] "\t" at "\t" line "\t" C[best] "\t" int(ox + L[best] / scale) " " int(ox + R[best] / scale)
     }'
 }
 
-# OCR languages: "ocrLanguages" in the config, by default ("auto") every installed Tesseract
-# language pack, at most four. English alone reads "Hôtel" as "Hétel"; installing a language's
-# pack (tesseract-data-fra, -deu, ...) lets taps read its accents.
-langs_cfg="auto"
+# OCR languages: "ocrLanguages" in the config, by default English; "auto" is every installed
+# Tesseract pack. At most four, each run in parallel, the most confident reading winning. Extra
+# packs are for other scripts (rus, ell, ...): for accented Latin letters, use the Latin-script
+# model below, since rival Latin packs disagree confidently ("schôn" from French for "schön").
+langs_cfg="eng"
 for f in "$(dirname "${BASH_SOURCE[0]}")/../defaults.json" "${XDG_CONFIG_HOME:-$HOME/.config}/wordtap/config.json"; do
   [[ -f "$f" && ! -L "$f" ]] || continue
   v="$(jq -r '.ocrLanguages | if type == "array" then join("+") elif type == "string" then . else empty end' "$f" 2>/dev/null)"
@@ -104,20 +109,65 @@ for lang in "${langs[@]}"; do
   [[ "$lang" =~ ^[A-Za-z_]+$ ]] || continue
   pick "$tmp/plain.png" "$lang" >"$tmp/plain.$lang" & pick "$tmp/local.png" "$lang" >"$tmp/local.$lang" &
 done
+
+# Accents: with Tesseract's Latin-script model installed (scripts/ocr-accents enable), also read
+# a small box around the pointer with it. It knows every Latin alphabet's letters but reads
+# English a little worse, so below it only restores accents to the word English read.
+accent_dir="${XDG_DATA_HOME:-$HOME/.local/share}/wordtap/tessdata"
+if [[ -f "$accent_dir/Latin.traineddata" ]]; then
+  AW=240 AH=40; (( AW > W )) && AW=$W; (( AH > H )) && AH=$H
+  ax=$(( cx - AW / 2 )); (( ax > x0 + W - AW )) && ax=$(( x0 + W - AW )); (( ax < x0 )) && ax=$x0
+  ay=$(( cy - AH / 2 )); (( ay > y0 + H - AH )) && ay=$(( y0 + H - AH )); (( ay < y0 )) && ay=$y0
+  magick "$tmp/plain.png" -crop "$(( AW * SCALE ))x$(( AH * SCALE ))+$(( (ax - x0) * SCALE ))+$(( (ay - y0) * SCALE ))" \
+    +repage "$tmp/accent.png" && pick "$tmp/accent.png" Latin "$ax" "$ay" "$accent_dir" >"$tmp/accent" &
+fi
 wait
 
 # The plain reading is the more accurate one for ordinary text; the local one fills in. Across
 # languages, the most confident reading wins (English first on a tie).
 best_pick() {  # <plain|local>: sets word/at/line from that reading's most confident language
-  local f w a l c bc=-1
+  local f w a l c x bc=-1
   for lang in "${langs[@]}"; do
     f="$tmp/$1.$lang"
-    [[ -s "$f" ]] && IFS=$'\t' read -r w a l c <"$f" && [[ -n "$w" ]] || continue
-    if awk -v c="$c" -v b="$bc" 'BEGIN { exit !(c + 0 > b + 0) }'; then word=$w at=$a line=$l bc=$c; fi
+    [[ -s "$f" ]] && IFS=$'\t' read -r w a l c x <"$f" && [[ -n "$w" ]] || continue
+    if awk -v c="$c" -v b="$bc" 'BEGIN { exit !(c + 0 > b + 0) }'; then word=$w at=$a line=$l box=$x bc=$c; fi
   done
   [[ "$bc" != -1 ]]
 }
-best_pick plain || best_pick local || exit 0
+best_pick plain || best_pick local || { [[ -s "$tmp/accent" ]] && IFS=$'\t' read -r word at line _ box <"$tmp/accent"; } || exit 0
+
+# Edit distance, for comparing OCR readings.
+LEV='function lev(a, b,   i, j, la, lb, p, c, t) {
+  la = length(a); lb = length(b)
+  for (j = 0; j <= lb; j++) p[j] = j
+  for (i = 1; i <= la; i++) {
+    c[0] = i
+    for (j = 1; j <= lb; j++) {
+      t = p[j - 1] + (substr(a, i, 1) != substr(b, j, 1))
+      if (p[j] + 1 < t) t = p[j] + 1
+      if (c[j - 1] + 1 < t) t = c[j - 1] + 1
+      c[j] = t
+    }
+    for (j = 0; j <= lb; j++) p[j] = c[j]
+  }
+  return p[lb]
+}'
+
+# Take the Latin model's spelling when it has accents and is the same word: the same place on
+# screen, and close once accents are stripped (English OCR turns "grün" into "griin", "Fluß"
+# into "FluB"). So accents are restored ("Letzebuergesch" -> "Lëtzebuergesch"), never another word.
+fold() { iconv -f utf-8 -t ascii//TRANSLIT 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]'; }
+if [[ -s "$tmp/accent" ]] && IFS=$'\t' read -r aword _ _ _ abox <"$tmp/accent" && [[ -n "$aword" && "$aword" == *[![:ascii:]]* ]] \
+  && WT_A="$(printf '%s' "$aword" | fold)" WT_B="$(printf '%s' "$word" | fold)" awk -v abox="$abox" -v box="${box:-}" "$LEV"'
+    BEGIN {
+      split(abox, p, " "); split(box, q, " ")
+      overlap = (p[2] < q[2] ? p[2] : q[2]) - (p[1] > q[1] ? p[1] : q[1])
+      narrow = (p[2] - p[1] < q[2] - q[1]) ? p[2] - p[1] : q[2] - q[1]
+      a = ENVIRON["WT_A"]; b = ENVIRON["WT_B"]; n = length(a)
+      exit !(n > 0 && narrow > 0 && overlap >= narrow / 2 && lev(a, b) <= int(n / 2))
+    }'; then
+  word="$aword"
+fi
 
 # Trim surrounding punctuation ("(word)," -> "word"), keep inner ' and -.
 trim() { sed -E "s/^[^[:alnum:]]+//; s/[^[:alnum:]]+$//"; }
@@ -132,23 +182,8 @@ else sel="$(timeout 1 wl-paste --primary --no-newline --type text/plain 2>/dev/n
 sel="$(printf '%s' "$sel" | tr '\n\t' '  ' | tr -s ' ' | sed -e 's/^ //' -e 's/ $//')"
 phrase_at() {  # <pick file>: succeeds when the highlight matches there. The text goes via the environment.
   [[ -s "$1" ]] || return 1
-  WT_SEL="$sel" awk -F'\t' -v maxw="$MAX_PHRASE_WORDS" '
+  WT_SEL="$sel" awk -F'\t' -v maxw="$MAX_PHRASE_WORDS" "$LEV"'
     function squash(x) { x = tolower(x); gsub(/[^[:alnum:]]+/, " ", x); gsub(/^ | $/, "", x); return x }
-    function lev(a, b,   i, j, la, lb, p, c, t) {
-      la = length(a); lb = length(b)
-      for (j = 0; j <= lb; j++) p[j] = j
-      for (i = 1; i <= la; i++) {
-        c[0] = i
-        for (j = 1; j <= lb; j++) {
-          t = p[j - 1] + (substr(a, i, 1) != substr(b, j, 1))
-          if (p[j] + 1 < t) t = p[j] + 1
-          if (c[j - 1] + 1 < t) t = c[j - 1] + 1
-          c[j] = t
-        }
-        for (j = 0; j <= lb; j++) p[j] = c[j]
-      }
-      return p[lb]
-    }
     {
       want = squash(ENVIRON["WT_SEL"]); k = split(want, s, " ")
       if (k < 2 || k > maxw) exit 1
@@ -172,7 +207,7 @@ phrase_at() {  # <pick file>: succeeds when the highlight matches there. The tex
     }' "$1"
 }
 if [[ -n "$sel" ]]; then
-  for f in "$tmp"/plain.* "$tmp"/local.*; do
+  for f in "$tmp"/plain.* "$tmp"/local.* "$tmp/accent"; do
     [[ "$f" == *.png ]] && continue
     if phrase_at "$f"; then query="$sel"; break; fi
   done

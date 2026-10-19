@@ -1,7 +1,7 @@
 {
-  "$comment": "Shipped defaults. Override any of these in ~/.config/wordtap/config.json (only the keys you change). sources: which dictionaries to show, top to bottom; ids match providers/<id>.json. ocrLanguages: Tesseract languages that read the word under the pointer, \"auto\" for every installed pack (at most four) or a list like [\"eng\", \"fra\"]. tap: the touchpad gesture that looks up the word under the pointer.",
+  "$comment": "Shipped defaults. Override any of these in ~/.config/wordtap/config.json (only the keys you change). sources: which dictionaries to show, top to bottom; ids match providers/<id>.json. ocrLanguages: Tesseract languages that read the word under the pointer (at most four; \"auto\" = every installed pack). For accented Latin letters run scripts/ocr-accents enable instead; extra packs are for other scripts, e.g. [\"eng\", \"rus\"]. tap: the touchpad gesture that looks up the word under the pointer.",
   "sources": ["wiktionary", "wikipedia", "webster1913"],
-  "ocrLanguages": "auto",
+  "ocrLanguages": ["eng"],
   "tap": {
     "enabled": true,
     "fingers": 3,

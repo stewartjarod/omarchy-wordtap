@@ -11,8 +11,13 @@ summary for names, places and companies. Themed to your Omarchy theme.
   swipes and three-finger clicks are ignored.
 - **Other languages.** Words without an English entry show their meaning in another language,
   named: `schön` is *German adj: beautiful, lovely*, `hôtel de ville` *French noun: town hall*.
-  To read accented letters off the screen, install the OCR pack for the language
-  (`tesseract-data-fra`, `-deu`, `-spa`, ...; 2-5 MB each). Every installed pack is used.
+- **Accents.** The English OCR that ships with Omarchy drops or garbles accents (`schön` becomes
+  `schon`, `grün` becomes `griin`). Two fixes, both automatic once in place:
+  - When a word finds nothing, Wiktionary's search restores accents that were simply lost
+    (`Letzebuergesch` → `Lëtzebuergesch`). It accepts a spelling that differs only by accents.
+  - For accurate reading of accented text in any Latin-alphabet language (é ô ö ë ñ ø ß ...), run
+    `scripts/ocr-accents enable` once. It downloads Tesseract's Latin-script model (89 MB, pinned and
+    checksummed) and taps then take the accents from it. `ocr-accents disable` deletes it.
 - **Phrases too.** Highlight a few words (up to 8), then tap on them to look up the whole phrase:
   `New York City`, `carpe diem`. A highlight somewhere else is ignored; the tap still looks up its
   own word.
@@ -34,7 +39,7 @@ All ship with Omarchy; nothing to install on a stock system.
 | Needed for | Packages |
 |---|---|
 | Popup and dictionary engine | `jq`, `sqlite`, `xz`, `curl` |
-| Reading the word under the pointer | `grim`, `imagemagick`, `tesseract`, `tesseract-data-eng`, `wl-clipboard` |
+| Reading the word under the pointer | `grim`, `imagemagick`, `tesseract`, `tesseract-data-eng`, `wl-clipboard` (optional: the Latin-script model, see Accents) |
 | Tap detection | `python3` (standard library only) and read access to your touchpad (below) |
 
 ### Touchpad access (once)
@@ -72,7 +77,7 @@ o.bind("SUPER + ALT + SHIFT + D", "Look up selected text", wordtap .. "lookup-se
 ```sh
 ~/.config/omarchy/plugins/stewartjarod.wordtap/scripts/touchpad-access disable
 omarchy plugin remove stewartjarod.wordtap
-rm -rf ~/.config/wordtap ~/.cache/wordtap
+rm -rf ~/.config/wordtap ~/.cache/wordtap ~/.local/share/wordtap
 ```
 
 ## Settings
@@ -90,7 +95,7 @@ live in the plugin's `defaults.json`.
 | Setting | Default | What it does |
 |---|---|---|
 | `sources` | `["wiktionary", "wikipedia", "webster1913"]` | Sources shown, top to bottom. Remove one to hide it; leave only `webster1913` to stay fully offline. |
-| `ocrLanguages` | `"auto"` | Tesseract languages that read the word under the pointer: every installed pack (at most four), or a list like `["eng", "fra"]`. Each runs in parallel; the most confident reading wins. |
+| `ocrLanguages` | `["eng"]` | Tesseract languages that read the word under the pointer (at most four, run in parallel; the most confident reading wins). `"auto"` uses every installed pack. For accented Latin letters use `scripts/ocr-accents` instead; extra packs are for other scripts, e.g. `["eng", "rus"]`. |
 | `tap.enabled` | `true` | Turn the tap gesture off (hotkeys keep working). |
 | `tap.fingers` | `3` | Fingers in the tap. |
 | `tap.maxMs` | `250` | Longest touch, first finger down to lift, that still counts as a tap. |
@@ -104,12 +109,14 @@ live in the plugin's `defaults.json`.
 | What | Where | Notes |
 |---|---|---|
 | Your settings | `~/.config/wordtap/config.json` | Optional. |
-| Lookup cache | `~/.cache/wordtap/` | Online responses (30 days Wiktionary, 7 days Wikipedia; misses for a day) and the unpacked Webster's database. Mode 0700. Safe to delete. |
+| Lookup cache | `~/.cache/wordtap/` | Online responses (30 days Wiktionary, 7 days Wikipedia; a "not found" for a day, a timeout not at all) and the unpacked Webster's database. Mode 0700. Safe to delete. |
+| Accents model | `~/.local/share/wordtap/tessdata/` | Only after `scripts/ocr-accents enable` (89 MB). `ocr-accents disable` removes it. |
 
 ## Privacy
 
 - The word you tap or type is sent to `kaikki.org` and `en.wikipedia.org` over HTTPS to fetch its
-  entry, unless you remove those sources. Nothing else leaves the machine: no account, no API key,
+  entry, unless you remove those sources. When nothing is found, it also goes to `en.wiktionary.org`'s
+  search to restore lost accents. Nothing else leaves the machine: no account, no API key,
   no analytics.
 - The text you look up never appears on a command line, where other users on the machine could read it:
   it reaches the popup through a private file under `$XDG_RUNTIME_DIR/wordtap/` (deleted once read) and the

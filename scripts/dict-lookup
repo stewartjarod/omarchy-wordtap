@@ -40,7 +40,7 @@ JQ="$(pin jq)"; SQLITE3="$(pin sqlite3)"; XZ="$(pin xz)"
 HEAD="$(pin head)"; WC="$(pin wc)"; MV="$(pin mv)"; RM="$(pin rm)"; MKDIR="$(pin mkdir)"
 CHMOD="$(pin chmod)"; MKTEMP="$(pin mktemp)"; DIRNAME="$(pin dirname)"; BASENAME="$(pin basename)"
 SED="$(pin sed)"; AWK="$(pin awk)"; TR="$(pin tr)"
-CURL="$(pin curl)"; SHA256SUM="$(pin sha256sum)"; FIND="$(pin find)"
+CURL="$(pin curl)"; SHA256SUM="$(pin sha256sum)"; FIND="$(pin find)"; ICONV="$(pin iconv)"
 
 # Hard cap on the decompressed dictionary (real DB is ~28 MB); bounds a
 # decompression bomb from exhausting storage.
@@ -199,8 +199,9 @@ suggest_sqlite() {
 }
 
 # Fetch an https URL through a per-source response cache. Hits are kept for
-# <ttl_days>; misses (404 etc.) for a day, so repeat lookups never wait on the
-# network. Prints the body; returns 1 on a miss.
+# <ttl_days>, and a 404 for a day, so repeat lookups never wait on the network. A
+# timeout or outage is not remembered: the next lookup tries again. Prints the body;
+# returns 1 on a miss.
 fetch_cached() {
   local sub="$1" ttl_days="$2" url="$3"
   local dir="$cache_dir/$sub" key file body tmp
@@ -214,18 +215,22 @@ fetch_cached() {
     printf '%s' "$(<"$file")"; return 0
   fi
   # The URL holds the word, so curl reads it from a config on stdin (-K -), quoted per curl's rules.
-  local quoted="${url//\\/\\\\}"; quoted="${quoted//\"/\\\"}"
-  if body="$(printf 'url = "%s"\n' "$quoted" | "$CURL" -fsS --proto =https -A "WordTap/0.1 (Omarchy shell plugin)" --max-time 3 --max-filesize 8388608 -K - 2>/dev/null)" && [[ -n "$body" ]]; then
-    tmp="$("$MKTEMP" -- "$dir/.fetch.XXXXXX" 2>/dev/null)" && printf '%s' "$body" >"$tmp" && "$MV" -f -- "$tmp" "$file"
-    printf '%s' "$body"; return 0
+  local quoted="${url//\\/\\\\}" code; quoted="${quoted//\"/\\\"}"
+  tmp="$("$MKTEMP" -- "$dir/.fetch.XXXXXX" 2>/dev/null)" || return 1
+  code="$(printf 'url = "%s"\n' "$quoted" | "$CURL" -sS --proto =https -A "WordTap/0.1 (Omarchy shell plugin)" \
+    --max-time 4 --max-filesize 8388608 -o "$tmp" -w '%{http_code}' -K - 2>/dev/null)" || true
+  if [[ "$code" == 200 && -s "$tmp" ]]; then
+    "$MV" -f -- "$tmp" "$file"; printf '%s' "$(<"$file")"; return 0
   fi
-  : >"$file.miss" 2>/dev/null || true
+  "$RM" -f -- "$tmp"
+  if [[ "$code" == 404 ]]; then : >"$file.miss" 2>/dev/null || true; fi
   return 1
 }
 
 # Query Kaikki.org's machine-readable Wiktionary (every language; scripts/kaikki.jq
-# prefers English) for definitions, morpheme breakdown and etymology. Tries at most <max_tries> candidates so a miss stays
-# inside the popup's lookup watchdog. Prints a JSON array (possibly empty).
+# prefers English) for definitions, morpheme breakdown and etymology. Tries at most
+# <max_tries> candidates so a miss stays inside the popup's lookup watchdog. Prints a
+# JSON array (possibly empty).
 kaikki_url() {  # <base> <word>
   WT_BASE="$1" WT_S="$2" "$JQ" -jn '$ENV.WT_S as $s | "\($ENV.WT_BASE)/\($s[0:1]|@uri)/\($s[0:2]|@uri)/\($s|@uri).jsonl"'
 }
@@ -235,7 +240,7 @@ query_kaikki() {
   for c in "$@"; do
     (( tries++ < max_tries )) || break
     raw="$(fetch_cached kaikki "$ttl_days" "$(kaikki_url "$base" "$c")")" || continue
-    out="$(WORDTAP_WORD="$c" "$JQ" -cs -f "$plugin_dir/scripts/kaikki.jq" <<<"$raw" 2>/dev/null || true)"
+    out="$(WORDTAP_WORD="$c" WORDTAP_ENGLISH_ONLY="${KAIKKI_EN_ONLY:-}" "$JQ" -cs -f "$plugin_dir/scripts/kaikki.jq" <<<"$raw" 2>/dev/null || true)"
     # An inflection ("berries" = "plural of berry") carries no etymology of its
     # own, so append the lemma's entries when every sense is a form-of.
     lemma="$("$JQ" -rs '(map(select((.lang // "English") == "English")) | if length > 0 then . else empty end)
@@ -243,7 +248,7 @@ query_kaikki() {
       | if ($s|length) > 0 and all($s[]; .form_of) then $s[0].form_of[0].word // "" else "" end' <<<"$raw" 2>/dev/null || true)"
     if [[ -n "$lemma" && "$lemma" != "$c" && -n "$out" ]] \
       && lraw="$(fetch_cached kaikki "$ttl_days" "$(kaikki_url "$base" "$lemma")")"; then
-      lout="$(WORDTAP_WORD="$lemma" "$JQ" -cs -f "$plugin_dir/scripts/kaikki.jq" <<<"$lraw" 2>/dev/null || true)"
+      lout="$(WORDTAP_WORD="$lemma" WORDTAP_ENGLISH_ONLY="${KAIKKI_EN_ONLY:-}" "$JQ" -cs -f "$plugin_dir/scripts/kaikki.jq" <<<"$lraw" 2>/dev/null || true)"
       [[ -n "$lout" ]] && out="$(printf '%s\n%s' "$out" "$lout" | "$JQ" -cs 'add' 2>/dev/null || printf '%s' "$out")"
     fi
     if [[ -n "$out" && "$out" != "[]" && "$out" != "null" ]]; then
@@ -269,6 +274,22 @@ query_wikipedia() {
   printf '[]'
 }
 
+# Lowercase ASCII letters and digits only: "Lëtzebuergesch" and "Letzebuergesch" fold alike.
+fold() { "$ICONV" -f utf-8 -t ascii//TRANSLIT 2>/dev/null | "$TR" '[:upper:]' '[:lower:]' | "$TR" -cd '[:alnum:]'; }
+
+# Accents lost on the way in (English OCR reads "Lëtzebuergesch" as "Letzebuergesch"): ask
+# Wiktionary's search for the phrase and take a title that differs from it only by accents,
+# never another word. Prints that spelling; fails when there is none.
+accent_fix() {  # <phrase>
+  local raw want t
+  raw="$(fetch_cached suggest 30 "https://en.wiktionary.org/w/api.php?action=opensearch&format=json&namespace=0&limit=10&search=$(WT_S="$1" "$JQ" -jn '$ENV.WT_S|@uri')")" || return 1
+  want="$(printf '%s' "$1" | fold)"
+  while IFS= read -r t; do
+    if [[ "$t" == *[![:ascii:]]* && "$(printf '%s' "$t" | fold)" == "$want" ]]; then printf '%s' "$t"; return 0; fi
+  done < <("$JQ" -r '.[1][]? | strings' <<<"$raw" 2>/dev/null)
+  return 1
+}
+
 # Results for one online provider, by its descriptor. Prints a JSON array.
 query_online() {
   local desc="$1" kind base ttl
@@ -280,10 +301,15 @@ query_online() {
     kaikki)
       # Proper nouns live under their capitalized headword ("Paris" the city,
       # "paris" the plant), so try the selection's own casing first, then the
-      # lowercase candidates, and show both.
+      # lowercase candidates, and show both. The cased try takes English entries
+      # only, or a sentence-initial "Hotel" would show the German noun; another
+      # language's comes in when nothing English matched ("Léonard", a French name).
       local cased='[]' lower
-      [[ "$cased_phrase" != "$norm" ]] && cased="$(query_kaikki "$base" "$ttl" 2 "$cased_phrase" "$cased_first")"
+      [[ "$cased_phrase" != "$norm" ]] && cased="$(KAIKKI_EN_ONLY=1 query_kaikki "$base" "$ttl" 2 "$cased_phrase" "$cased_first")"
       lower="$(query_kaikki "$base" "$ttl" 3 "${cands[@]}")"
+      if [[ "$cased" == "[]" && "$lower" == "[]" && "$cased_phrase" != "$norm" ]]; then
+        cased="$(query_kaikki "$base" "$ttl" 2 "$cased_phrase" "$cased_first")"
+      fi
       printf '%s\n%s' "$cased" "$lower" | "$JQ" -cs 'add'
       ;;
     wikipedia)
@@ -355,6 +381,21 @@ for pid in "${providers[@]}"; do
 done
 
 found=false; [[ "$any_found" == 1 ]] && found=true
+
+# Nothing anywhere, and no accents in the query: maybe they were lost (see accent_fix). Look up
+# the accented spelling instead, once, keeping the query as typed so the popup recognises it.
+online=0
+for pid in "${providers[@]}"; do
+  [[ -n "$pid" && "$pid" != */* && -f "$plugin_dir/providers/$pid.json" ]] || continue
+  case "$("$JQ" -r '.kind // ""' "$plugin_dir/providers/$pid.json")" in kaikki|wikipedia) online=1 ;; esac
+done
+if [[ "$found" == false && "$online" == 1 && -z "${WORDTAP_ACCENT_RETRY:-}" && "$cased_phrase" != *[![:ascii:]]* ]] \
+  && fixed="$(accent_fix "$cased_phrase")" \
+  && out="$(WORDTAP_QUERY="$fixed" WORDTAP_ACCENT_RETRY=1 /usr/bin/bash "${BASH_SOURCE[0]}")" \
+  && "$JQ" -e '.found' >/dev/null 2>&1 <<<"$out"; then
+  WT_Q="$raw_query" "$JQ" -c '.query = $ENV.WT_Q' <<<"$out"
+  exit 0
+fi
 
 printf '%s\n%s' "$sections" "$suggestions" | WT_Q="$raw_query" WT_WORD="$first" "$JQ" -cs --argjson found "$found" \
   '{query:$ENV.WT_Q, word:$ENV.WT_WORD, found:$found, sections:.[0], suggestions:.[1]}'

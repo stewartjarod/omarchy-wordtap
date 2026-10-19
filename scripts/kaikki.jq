@@ -33,13 +33,14 @@ def dedupe: reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end);
 
 def english: (.lang // "English") == "English";
 
-# The records to show: English ones, else one other language's, preferring common languages.
+# The records to show: English ones, else one other language's, preferring common languages
+# (none with WORDTAP_ENGLISH_ONLY=1).
 def pick_lang:
   ["German", "French", "Spanish", "Italian", "Portuguese", "Dutch", "Latin", "Swedish", "Danish",
    "Norwegian Bokmål", "Polish", "Czech", "Russian", "Ukrainian", "Greek", "Turkish", "Japanese",
    "Chinese", "Korean", "Arabic", "Hindi"] as $common
   | (map(select(english))) as $en
-  | if ($en | length) > 0 then $en
+  | if ($en | length) > 0 or $ENV.WORDTAP_ENGLISH_ONLY == "1" then $en
     else to_entries
       | sort_by((.value.lang as $l | $common | index($l)) // 99, .key)
       | map(.value)

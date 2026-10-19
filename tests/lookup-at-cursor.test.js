@@ -7,6 +7,9 @@ const path = require("path")
 const { spawnSync } = require("child_process")
 
 const root = path.join(__dirname, "..")
+const os = require("os")
+const fs = require("fs")
+const latin = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local/share"), "wordtap/tessdata/Latin.traineddata")
 const have = (cmd) => spawnSync("sh", ["-c", `command -v ${cmd}`]).status === 0
 const skip = !(have("tesseract") && have("magick")) && "needs tesseract and imagemagick"
 
@@ -46,4 +49,9 @@ test("accents.png: an accented phrase, read without its accent, still matches", 
   const at = { Hotel: [48, 8], de: [75, 8], Ville: [98, 8], Limoges: [153, 10] }
   for (const w of ["Hotel", "de", "Ville"]) assert.equal(tap("accents.png", at[w], "Hôtel de Ville"), "Hôtel de Ville", w)
   assert.equal(tap("accents.png", at.Limoges, "Hôtel de Ville"), "Limoges")
+})
+
+test("german.png: with the Latin-script model, taps keep umlauts and ß", { skip: skip || (!fs.existsSync(latin) && "needs scripts/ocr-accents enable") }, () => {
+  const at = { schön: [115, 9], grün: [213, 10], Brücke: [296, 8], Fluß: [392, 8], Wetter: [55, 8] }
+  for (const [w, xy] of Object.entries(at)) assert.equal(tap("german.png", xy), w)
 })

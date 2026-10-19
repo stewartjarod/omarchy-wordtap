@@ -6,10 +6,10 @@ const { execFileSync } = require("child_process")
 const path = require("path")
 
 const root = path.join(__dirname, "..")
-function entries(word) {
+function entries(word, env = {}) {
   const out = execFileSync("sh", ["-c",
     `WORDTAP_WORD="$1" jq -cs -f scripts/kaikki.jq < tests/fixtures/kaikki/"$1".jsonl`, "sh", word],
-    { cwd: root, encoding: "utf8" })
+    { cwd: root, encoding: "utf8", env: { ...process.env, ...env } })
   return JSON.parse(out)
 }
 
@@ -45,4 +45,9 @@ test("a word with no English entry shows its most common other language, named",
 test("English entries win over other languages", () => {
   for (const w of ["unbelievable", "bass", "berries"])
     assert.ok(entries(w).every((x) => !/ · [A-Z]\w+ (noun|adj|verb)/.test(x.headword)), w)
+})
+
+test("WORDTAP_ENGLISH_ONLY=1 drops other languages (the cased proper-noun try)", () => {
+  assert.deepEqual(entries("schön", { WORDTAP_ENGLISH_ONLY: "1" }), [])
+  assert.equal(entries("bass", { WORDTAP_ENGLISH_ONLY: "1" })[0].headword, "bass · adj")
 })
