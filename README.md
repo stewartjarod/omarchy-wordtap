@@ -9,6 +9,10 @@ summary for names, places and companies. Themed to your Omarchy theme.
 - **Three-finger tap, anywhere.** Works in any app: the word under the pointer is read off the
   screen (OCR), so nothing is clicked or selected in the app underneath. Tap-to-click can stay off;
   swipes and three-finger clicks are ignored.
+- **Other languages.** Words without an English entry show their meaning in another language,
+  named: `schön` is *German adj: beautiful, lovely*, `hôtel de ville` *French noun: town hall*.
+  To read accented letters off the screen, install the OCR pack for the language
+  (`tesseract-data-fra`, `-deu`, `-spa`, ...; 2-5 MB each). Every installed pack is used.
 - **Phrases too.** Highlight a few words (up to 8), then tap on them to look up the whole phrase:
   `New York City`, `carpe diem`. A highlight somewhere else is ignored; the tap still looks up its
   own word.
@@ -86,6 +90,7 @@ live in the plugin's `defaults.json`.
 | Setting | Default | What it does |
 |---|---|---|
 | `sources` | `["wiktionary", "wikipedia", "webster1913"]` | Sources shown, top to bottom. Remove one to hide it; leave only `webster1913` to stay fully offline. |
+| `ocrLanguages` | `"auto"` | Tesseract languages that read the word under the pointer: every installed pack (at most four), or a list like `["eng", "fra"]`. Each runs in parallel; the most confident reading wins. |
 | `tap.enabled` | `true` | Turn the tap gesture off (hotkeys keep working). |
 | `tap.fingers` | `3` | Fingers in the tap. |
 | `tap.maxMs` | `250` | Longest touch, first finger down to lift, that still counts as a tap. |

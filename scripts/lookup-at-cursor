@@ -47,15 +47,15 @@ else
   grim -g "$x0,$y0 ${W}x${H}" "$tmp/shot.png" 2>/dev/null || exit 0
 fi
 
-# OCR <image> and pick the word box containing the cursor, else the nearest one within
-# reach. Prints "<word>\t<its index in the line>\t<line>", the line being every word
-# level with it, left to right.
+# OCR <image> in language <lang> and pick the word box containing the cursor, else the
+# nearest one within reach. Prints "<word>\t<its index in the line>\t<line>\t<confidence>",
+# the line being every word level with it, left to right.
 pick() {
-  OMP_THREAD_LIMIT=1 tesseract "$1" - --psm 11 tsv 2>/dev/null | awk -F'\t' \
+  OMP_THREAD_LIMIT=1 tesseract "$1" - -l "$2" --psm 11 tsv 2>/dev/null | awk -F'\t' \
     -v px=$(( (cx - x0) * SCALE )) -v py=$(( (cy - y0) * SCALE )) -v max=$(( MAX_DIST * SCALE )) '
     # Every word counts as line context; only a confident one can be the tapped word.
     NR > 1 && $12 ~ /[[:alnum:]]/ && $11 >= 0 {
-      n++; L[n] = $7; T[n] = $8; B[n] = $8 + $10; X[n] = $12
+      n++; L[n] = $7; T[n] = $8; B[n] = $8 + $10; X[n] = $12; C[n] = $11
       if ($12 !~ /[[:alpha:]]/ || $11 <= 40) next
       l = $7; t = $8; r = $7 + $9; b = $8 + $10
       dx = px < l ? l - px : (px > r ? px - r : 0)
@@ -71,23 +71,53 @@ pick() {
       }
       m = asorti(k, s); line = ""
       for (j = 1; j <= m; j++) { line = line (j > 1 ? " " : "") X[k[s[j]]]; if (k[s[j]] == best) at = j }
-      print X[best] "\t" at "\t" line
+      print X[best] "\t" at "\t" line "\t" C[best]
     }'
 }
 
-# Two readings, in parallel. Plain: inverted for dark themes, since Tesseract wants dark
-# text on light. Local: each pixel's distance from its neighbourhood's median, which reads
-# text of either polarity, so it also gets highlighted text that is inverted against the rest.
+# OCR languages: "ocrLanguages" in the config, by default ("auto") every installed Tesseract
+# language pack, at most four. English alone reads "Hôtel" as "Hétel"; installing a language's
+# pack (tesseract-data-fra, -deu, ...) lets taps read its accents.
+langs_cfg="auto"
+for f in "$(dirname "${BASH_SOURCE[0]}")/../defaults.json" "${XDG_CONFIG_HOME:-$HOME/.config}/wordtap/config.json"; do
+  [[ -f "$f" && ! -L "$f" ]] || continue
+  v="$(jq -r '.ocrLanguages | if type == "array" then join("+") elif type == "string" then . else empty end' "$f" 2>/dev/null)"
+  [[ -n "$v" ]] && langs_cfg="$v"
+done
+if [[ "$langs_cfg" == auto ]]; then
+  mapfile -t langs < <(tesseract --list-langs 2>/dev/null | grep -vE '^(List of|osd$|equ$)|_vert$' | sort -u | awk '$0 == "eng" { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }')
+else
+  IFS=+ read -ra langs <<<"$langs_cfg"
+fi
+langs=("${langs[@]:0:4}"); (( ${#langs[@]} )) || langs=(eng)
+
+# Two readings, in parallel, each in every language. Plain: inverted for dark themes, since
+# Tesseract wants dark text on light. Local: each pixel's distance from its neighbourhood's
+# median, which reads text of either polarity, so it also gets highlighted text that is
+# inverted against the rest.
 mean="$(magick "$tmp/shot.png" -colorspace gray -format '%[fx:mean]' info:)"
 negate=(); awk -v m="$mean" 'BEGIN { exit !(m < 0.5) }' && negate=(-negate)
 magick "$tmp/shot.png" -colorspace gray "${negate[@]}" -resize "$(( W * SCALE ))x$(( H * SCALE ))!" "$tmp/plain.png"
 magick "$tmp/shot.png" -colorspace gray \( +clone -statistic median 11x11 \) -compose difference -composite \
   -auto-level -negate -resize "$(( W * SCALE ))x$(( H * SCALE ))!" "$tmp/local.png"
-pick "$tmp/plain.png" >"$tmp/plain" & pick "$tmp/local.png" >"$tmp/local" & wait
+for lang in "${langs[@]}"; do
+  [[ "$lang" =~ ^[A-Za-z_]+$ ]] || continue
+  pick "$tmp/plain.png" "$lang" >"$tmp/plain.$lang" & pick "$tmp/local.png" "$lang" >"$tmp/local.$lang" &
+done
+wait
 
-# The plain reading is the more accurate one for ordinary text; the local one fills in.
-read_pick() { IFS=$'\t' read -r word at line <"$1" && [[ -n "$word" ]]; }
-read_pick "$tmp/plain" || read_pick "$tmp/local" || exit 0
+# The plain reading is the more accurate one for ordinary text; the local one fills in. Across
+# languages, the most confident reading wins (English first on a tie).
+best_pick() {  # <plain|local>: sets word/at/line from that reading's most confident language
+  local f w a l c bc=-1
+  for lang in "${langs[@]}"; do
+    f="$tmp/$1.$lang"
+    [[ -s "$f" ]] && IFS=$'\t' read -r w a l c <"$f" && [[ -n "$w" ]] || continue
+    if awk -v c="$c" -v b="$bc" 'BEGIN { exit !(c + 0 > b + 0) }'; then word=$w at=$a line=$l bc=$c; fi
+  done
+  [[ "$bc" != -1 ]]
+}
+best_pick plain || best_pick local || exit 0
 
 # Trim surrounding punctuation ("(word)," -> "word"), keep inner ' and -.
 trim() { sed -E "s/^[^[:alnum:]]+//; s/[^[:alnum:]]+$//"; }
@@ -141,8 +171,11 @@ phrase_at() {  # <pick file>: succeeds when the highlight matches there. The tex
       exit 1
     }' "$1"
 }
-if [[ -n "$sel" ]] && { phrase_at "$tmp/plain" || phrase_at "$tmp/local"; }; then
-  query="$sel"
+if [[ -n "$sel" ]]; then
+  for f in "$tmp"/plain.* "$tmp"/local.*; do
+    [[ "$f" == *.png ]] && continue
+    if phrase_at "$f"; then query="$sel"; break; fi
+  done
 fi
 
 if (( $# == 3 )); then printf '%s\n' "$query"; exit 0; fi

@@ -2,7 +2,7 @@
   "id": "wiktionary",
   "name": "Wiktionary",
   "kind": "kaikki",
-  "base": "https://kaikki.org/dictionary/English/meaning",
+  "base": "https://kaikki.org/dictionary/All%20languages%20combined/meaning",
   "cacheDays": 30,
   "attribution": "Wiktionary (CC BY-SA 4.0), via Kaikki.org machine-readable extracts."
 }

@@ -223,8 +223,8 @@ fetch_cached() {
   return 1
 }
 
-# Query Kaikki.org's machine-readable Wiktionary for definitions, morpheme
-# breakdown and etymology. Tries at most <max_tries> candidates so a miss stays
+# Query Kaikki.org's machine-readable Wiktionary (every language; scripts/kaikki.jq
+# prefers English) for definitions, morpheme breakdown and etymology. Tries at most <max_tries> candidates so a miss stays
 # inside the popup's lookup watchdog. Prints a JSON array (possibly empty).
 kaikki_url() {  # <base> <word>
   WT_BASE="$1" WT_S="$2" "$JQ" -jn '$ENV.WT_S as $s | "\($ENV.WT_BASE)/\($s[0:1]|@uri)/\($s[0:2]|@uri)/\($s|@uri).jsonl"'
@@ -238,7 +238,8 @@ query_kaikki() {
     out="$(WORDTAP_WORD="$c" "$JQ" -cs -f "$plugin_dir/scripts/kaikki.jq" <<<"$raw" 2>/dev/null || true)"
     # An inflection ("berries" = "plural of berry") carries no etymology of its
     # own, so append the lemma's entries when every sense is a form-of.
-    lemma="$("$JQ" -rs '[.[].senses[]?] as $s
+    lemma="$("$JQ" -rs '(map(select((.lang // "English") == "English")) | if length > 0 then . else empty end)
+      | [.[].senses[]?] as $s
       | if ($s|length) > 0 and all($s[]; .form_of) then $s[0].form_of[0].word // "" else "" end' <<<"$raw" 2>/dev/null || true)"
     if [[ -n "$lemma" && "$lemma" != "$c" && -n "$out" ]] \
       && lraw="$(fetch_cached kaikki "$ttl_days" "$(kaikki_url "$base" "$lemma")")"; then

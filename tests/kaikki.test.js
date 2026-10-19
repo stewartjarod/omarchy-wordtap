@@ -34,3 +34,15 @@ test("an inflection still yields its form-of senses", () => {
   assert.equal(e[0].headword, "berries · noun")
   assert.match(e[0].text, /plural of berry/)
 })
+
+test("a word with no English entry shows its most common other language, named", () => {
+  const e = entries("schön")
+  assert.equal(e[0].headword, "schön · German adj")
+  assert.match(e[0].text, /^1\. beautiful/)
+  assert.ok(e.every((x) => !/Bavarian|Franconian/.test(x.headword)), JSON.stringify(e))
+})
+
+test("English entries win over other languages", () => {
+  for (const w of ["unbelievable", "bass", "berries"])
+    assert.ok(entries(w).every((x) => !/ · [A-Z]\w+ (noun|adj|verb)/.test(x.headword)), w)
+})

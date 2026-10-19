@@ -4,9 +4,12 @@
 #
 # The word comes from the environment, not --arg, so it never appears on jq's command line.
 #
-# Input is the slurped array of per-POS records for one English headword. Output
-# is a JSON array of {headword,text} entries: Word parts, then one entry per
-# part of speech, then Etymology (one per distinct etymology).
+# Input is the slurped array of per-POS records for one headword, in any language
+# (Kaikki's all-languages edition). English records win; without any, the other
+# language's records are used, the most common language that has one, and their
+# headwords name it ("schön · German adj"). Output is a JSON array of {headword,text}
+# entries: Word parts, then one entry per part of speech, then Etymology (one per
+# distinct etymology).
 
 def strip_tree($w):
   # Long etymologies start with a rendered "Etymology tree" (one ancestor per
@@ -28,16 +31,31 @@ def parts:
 
 def dedupe: reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end);
 
+def english: (.lang // "English") == "English";
+
+# The records to show: English ones, else one other language's, preferring common languages.
+def pick_lang:
+  ["German", "French", "Spanish", "Italian", "Portuguese", "Dutch", "Latin", "Swedish", "Danish",
+   "Norwegian Bokmål", "Polish", "Czech", "Russian", "Ukrainian", "Greek", "Turkish", "Japanese",
+   "Chinese", "Korean", "Arabic", "Hindi"] as $common
+  | (map(select(english))) as $en
+  | if ($en | length) > 0 then $en
+    else to_entries
+      | sort_by((.value.lang as $l | $common | index($l)) // 99, .key)
+      | map(.value)
+      | .[0].lang as $first | map(select(.lang == $first))
+    end;
+
 def senses:
   [.senses[]? | select((.tags // []) | index("no-gloss") | not) | .glosses[-1]? // empty]
   | dedupe | .[:6];
 
 ($ENV.WORDTAP_WORD // "") as $word
-| . as $recs
+| pick_lang as $recs
 | [ ($recs | map(parts) | first // empty | {headword: "Word parts", text: .}) ]
 + [ $recs[]
     | (senses) as $s | select($s | length > 0)
-    | {headword: ($word + " · " + .pos),
+    | {headword: ($word + " · " + (if english then "" else .lang + " " end) + .pos),
        text: ([$s | to_entries[] | "\(.key + 1). \(.value)"] | join(" "))} ][:5]
 + ( [ $recs[] | .etymology_text // empty | strip_tree($word) | select(length > 0) ] | dedupe as $e
     | [ range(0; $e|length) as $i
