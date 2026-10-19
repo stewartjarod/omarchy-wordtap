@@ -13,6 +13,7 @@
 set -euo pipefail
 
 export PATH=/usr/local/bin:/usr/bin:/bin
+umask 077
 readonly COMMIT=87416418657359cb625c412a48b6e1d6d41c29bd
 readonly SHA256=6dbdaf8ecc6c40f025c2648bf3b3f3fbffe073e1fd2df2047fde2e2b2f020d53
 readonly URL="https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/$COMMIT/script/Latin.traineddata"
@@ -33,7 +34,6 @@ case "${1:-status}" in
     if ! sha256sum "$tmp" | grep -q "^$SHA256 "; then
       echo "ocr-accents: checksum mismatch; nothing installed" >&2; exit 1
     fi
-    chmod 644 -- "$tmp"
     mv -f -- "$tmp" "$model"; trap - EXIT
     echo "ocr-accents: enabled. Taps now read accented letters."
     ;;

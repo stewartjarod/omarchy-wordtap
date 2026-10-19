@@ -16,6 +16,7 @@
 set -uo pipefail
 # A UTF-8 locale, whatever the user's, so awk compares "Hôtel" letter by letter.
 export LC_ALL=C.UTF-8
+umask 077   # the screenshot and OCR files are ours alone
 
 W=500 H=70 SCALE=3   # capture box around the cursor (px) and OCR upscale
 MAX_DIST=10          # how far (screen px) the cursor may be from a word
@@ -44,7 +45,8 @@ y0=$(( cy - H / 2 )); (( y0 > my + mh - H )) && y0=$(( my + mh - H )); (( y0 < m
 if (( $# == 3 )); then
   magick "$3" -crop "${W}x${H}+${x0}+${y0}" +repage "$tmp/shot.png" || exit 0
 else
-  grim -g "$x0,$y0 ${W}x${H}" "$tmp/shot.png" 2>/dev/null || exit 0
+  # The region on stdin: on grim's command line, other users could see where you tapped.
+  printf '%s,%s %sx%s\n' "$x0" "$y0" "$W" "$H" | grim -g - "$tmp/shot.png" 2>/dev/null || exit 0
 fi
 
 # OCR <image> in language <lang> and pick the word box containing the cursor, else the
@@ -54,9 +56,11 @@ fi
 pick() {
   local ox=${3:-$x0} oy=${4:-$y0} dirs=()
   [[ -n "${5:-}" ]] && dirs=(--tessdata-dir "$5")
-  OMP_THREAD_LIMIT=1 tesseract "$1" - "${dirs[@]}" -l "$2" --psm 11 -c tessedit_create_tsv=1 2>/dev/null | awk -F'\t' \
-    -v px=$(( (cx - ox) * SCALE )) -v py=$(( (cy - oy) * SCALE )) -v max=$(( MAX_DIST * SCALE )) \
-    -v ox="$ox" -v scale="$SCALE" '
+  # Screen positions reach awk through its environment, not its command line.
+  OMP_THREAD_LIMIT=1 tesseract "$1" - "${dirs[@]}" -l "$2" --psm 11 -c tessedit_create_tsv=1 2>/dev/null \
+    | WT_PX=$(( (cx - ox) * SCALE )) WT_PY=$(( (cy - oy) * SCALE )) WT_OX="$ox" awk -F'\t' \
+    -v max=$(( MAX_DIST * SCALE )) -v scale="$SCALE" '
+    BEGIN { px = ENVIRON["WT_PX"] + 0; py = ENVIRON["WT_PY"] + 0; ox = ENVIRON["WT_OX"] + 0 }
     # Every word counts as line context; only a confident one can be the tapped word.
     NR > 1 && $12 ~ /[[:alnum:]]/ && $11 >= 0 {
       n++; L[n] = $7; R[n] = $7 + $9; T[n] = $8; B[n] = $8 + $10; X[n] = $12; C[n] = $11
@@ -158,9 +162,9 @@ LEV='function lev(a, b,   i, j, la, lb, p, c, t) {
 # into "FluB"). So accents are restored ("Letzebuergesch" -> "Lëtzebuergesch"), never another word.
 fold() { iconv -f utf-8 -t ascii//TRANSLIT 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]'; }
 if [[ -s "$tmp/accent" ]] && IFS=$'\t' read -r aword _ _ _ abox <"$tmp/accent" && [[ -n "$aword" && "$aword" == *[![:ascii:]]* ]] \
-  && WT_A="$(printf '%s' "$aword" | fold)" WT_B="$(printf '%s' "$word" | fold)" awk -v abox="$abox" -v box="${box:-}" "$LEV"'
+  && WT_A="$(printf '%s' "$aword" | fold)" WT_B="$(printf '%s' "$word" | fold)" WT_ABOX="$abox" WT_BOX="${box:-}" awk "$LEV"'
     BEGIN {
-      split(abox, p, " "); split(box, q, " ")
+      split(ENVIRON["WT_ABOX"], p, " "); split(ENVIRON["WT_BOX"], q, " ")
       overlap = (p[2] < q[2] ? p[2] : q[2]) - (p[1] > q[1] ? p[1] : q[1])
       narrow = (p[2] - p[1] < q[2] - q[1]) ? p[2] - p[1] : q[2] - q[1]
       a = ENVIRON["WT_A"]; b = ENVIRON["WT_B"]; n = length(a)

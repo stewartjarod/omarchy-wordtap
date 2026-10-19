@@ -102,3 +102,14 @@ test("dict-lookup takes the query from WORDTAP_QUERY (and still from $1 by hand)
     fs.rmSync(home, { recursive: true, force: true })
   }
 })
+
+test("every helper keeps the files it writes private (umask 077)", () => {
+  for (const f of [...RUNTIME, "scripts/ocr-accents"]) assert.match(read(f), /^umask 077\b/m, f)
+})
+
+test("the tap position stays off command lines (grim and awk get it on stdin / in the environment)", () => {
+  const s = read("scripts/lookup-at-cursor")
+  assert.match(s, /\| grim -g - /)
+  assert.doesNotMatch(s, /grim -g "/)
+  assert.doesNotMatch(s, /-v (px|py|ox|abox|box)=/)
+})
