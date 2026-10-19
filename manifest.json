@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "stewartjarod.wordtap",
   "name": "Word Tap",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "stewartjarod",
   "license": "MIT",
   "description": "Three-finger tap any word for a macOS-style popup: definitions, word parts, etymology (Wiktionary) and Wikipedia summaries, themed to Omarchy.",
