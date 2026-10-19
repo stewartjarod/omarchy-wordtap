@@ -9,6 +9,9 @@ summary for names, places and companies. Themed to your Omarchy theme.
 - **Three-finger tap, anywhere.** Works in any app: the word under the pointer is read off the
   screen (OCR), so nothing is clicked or selected in the app underneath. Tap-to-click can stay off;
   swipes and three-finger clicks are ignored.
+- **Phrases too.** Highlight a few words (up to 8), then tap on them to look up the whole phrase:
+  `New York City`, `carpe diem`. A highlight somewhere else is ignored; the tap still looks up its
+  own word.
 - **Word parts and etymology** from [Wiktionary](https://en.wiktionary.org) (via
   [Kaikki.org](https://kaikki.org)'s machine-readable extracts). Inflections follow through:
   `berries` also shows `berry` and where it came from. Capitalised words try the proper noun first
@@ -27,7 +30,7 @@ All ship with Omarchy; nothing to install on a stock system.
 | Needed for | Packages |
 |---|---|
 | Popup and dictionary engine | `jq`, `sqlite`, `xz`, `curl` |
-| Reading the word under the pointer | `grim`, `imagemagick`, `tesseract`, `tesseract-data-eng` |
+| Reading the word under the pointer | `grim`, `imagemagick`, `tesseract`, `tesseract-data-eng`, `wl-clipboard` |
 | Tap detection | `python3` (standard library only) and read access to your touchpad (below) |
 
 ### Touchpad access (once)
@@ -108,6 +111,9 @@ live in the plugin's `defaults.json`.
   lookup helpers through their environment or input.
 - Reading the word under the pointer takes a 500×70 px screenshot around it, runs OCR locally, and
   deletes the image immediately.
+- Each tap also reads your highlighted text (the primary selection, not the clipboard) to check
+  whether you tapped on it. It stays on the machine and is only looked up when it matches the words
+  under the pointer.
 - The tap watcher reads touch positions from touchpads only; it never reads keyboards and keeps no
   record of touches (debug mode logs counts and distances, not positions).
 

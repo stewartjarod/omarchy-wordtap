@@ -3,40 +3,144 @@
 # it in the popup. Nothing is clicked or selected in the app underneath.
 # Run by scripts/tap-watch on a three-finger tap; also fine to bind to a key.
 #
-# Requires: grim, imagemagick (magick), tesseract + tesseract-data-eng.
+# Highlight a phrase first and tap on it to look up the whole phrase: when the
+# highlighted text (the primary selection) is 2-8 words and the line under the
+# pointer reads the same around the tapped word, the phrase is looked up instead.
+#
+#   lookup-at-cursor                      the word under the pointer
+#   lookup-at-cursor X Y                  the word at screen point X,Y
+#   lookup-at-cursor X Y SHOT.png < SEL   testing: SHOT.png stands in for the screen
+#                                         and SEL for the highlight; prints the query
+#
+# Requires: grim, imagemagick (magick), tesseract + tesseract-data-eng, wl-paste, jq.
 set -uo pipefail
 
 W=500 H=70 SCALE=3   # capture box around the cursor (px) and OCR upscale
 MAX_DIST=10          # how far (screen px) the cursor may be from a word
+MAX_PHRASE_WORDS=8   # longest highlighted phrase a tap picks up
 
 tmp="$(mktemp -d)"; trap 'rm -rf -- "$tmp"' EXIT
 
-# Optional "x y" args look at that screen point instead (for testing).
-if (( $# == 2 )); then cx=$1 cy=$2; else read -r cx cy < <(hyprctl cursorpos | tr -d ,); fi
-x0=$(( cx - W / 2 )); (( x0 < 0 )) && x0=0
-y0=$(( cy - H / 2 )); (( y0 < 0 )) && y0=0
-grim -g "$x0,$y0 ${W}x${H}" "$tmp/shot.png" 2>/dev/null || exit 0
+if (( $# >= 2 )); then cx=$1 cy=$2; else read -r cx cy < <(hyprctl cursorpos | tr -d ,); fi
 
-# Tesseract wants dark text on light; invert dark themes.
+# Keep the capture box on the monitor under the pointer (logical px): a box hanging off an
+# edge comes back short, or not at all, and stretching it would misplace the pointer.
+if (( $# == 3 )); then
+  mx=0 my=0; read -r mw mh < <(magick identify -format '%w %h' "$3")
+else
+  read -r mx my mw mh < <(hyprctl monitors -j | WT_X="$cx" WT_Y="$cy" jq -r '
+    ($ENV.WT_X | tonumber) as $x | ($ENV.WT_Y | tonumber) as $y
+    | map(if .transform % 2 == 1 then {x, y, w: (.height / .scale), h: (.width / .scale)}
+        else {x, y, w: (.width / .scale), h: (.height / .scale)} end
+        | .w |= floor | .h |= floor)
+    | (map(select($x >= .x and $x < .x + .w and $y >= .y and $y < .y + .h)) + [{x: 0, y: 0, w: 1e9, h: 1e9}])[0]
+    | "\(.x) \(.y) \(.w) \(.h)"')
+fi
+(( W > mw )) && W=$mw; (( H > mh )) && H=$mh
+x0=$(( cx - W / 2 )); (( x0 > mx + mw - W )) && x0=$(( mx + mw - W )); (( x0 < mx )) && x0=$mx
+y0=$(( cy - H / 2 )); (( y0 > my + mh - H )) && y0=$(( my + mh - H )); (( y0 < my )) && y0=$my
+if (( $# == 3 )); then
+  magick "$3" -crop "${W}x${H}+${x0}+${y0}" +repage "$tmp/shot.png" || exit 0
+else
+  grim -g "$x0,$y0 ${W}x${H}" "$tmp/shot.png" 2>/dev/null || exit 0
+fi
+
+# OCR <image> and pick the word box containing the cursor, else the nearest one within
+# reach. Prints "<word>\t<its index in the line>\t<line>", the line being every word
+# level with it, left to right.
+pick() {
+  OMP_THREAD_LIMIT=1 tesseract "$1" - --psm 11 tsv 2>/dev/null | awk -F'\t' \
+    -v px=$(( (cx - x0) * SCALE )) -v py=$(( (cy - y0) * SCALE )) -v max=$(( MAX_DIST * SCALE )) '
+    # Every word counts as line context; only a confident one can be the tapped word.
+    NR > 1 && $12 ~ /[[:alnum:]]/ && $11 >= 0 {
+      n++; L[n] = $7; T[n] = $8; B[n] = $8 + $10; X[n] = $12
+      if ($12 !~ /[[:alpha:]]/ || $11 <= 40) next
+      l = $7; t = $8; r = $7 + $9; b = $8 + $10
+      dx = px < l ? l - px : (px > r ? px - r : 0)
+      dy = py < t ? t - py : (py > b ? py - b : 0)
+      d = dx + dy
+      if (d <= max && (best == "" || d < bd)) { bd = d; best = n }
+    }
+    END {
+      if (best == "") exit
+      for (i = 1; i <= n; i++) {
+        c = (T[i] + B[i]) / 2
+        if (c >= T[best] && c <= B[best]) k[sprintf("%08d %d", L[i], i)] = i
+      }
+      m = asorti(k, s); line = ""
+      for (j = 1; j <= m; j++) { line = line (j > 1 ? " " : "") X[k[s[j]]]; if (k[s[j]] == best) at = j }
+      print X[best] "\t" at "\t" line
+    }'
+}
+
+# Two readings, in parallel. Plain: inverted for dark themes, since Tesseract wants dark
+# text on light. Local: each pixel's distance from its neighbourhood's median, which reads
+# text of either polarity, so it also gets highlighted text that is inverted against the rest.
 mean="$(magick "$tmp/shot.png" -colorspace gray -format '%[fx:mean]' info:)"
 negate=(); awk -v m="$mean" 'BEGIN { exit !(m < 0.5) }' && negate=(-negate)
-magick "$tmp/shot.png" -colorspace gray "${negate[@]}" -resize "$(( W * SCALE ))x$(( H * SCALE ))!" "$tmp/ocr.png"
+magick "$tmp/shot.png" -colorspace gray "${negate[@]}" -resize "$(( W * SCALE ))x$(( H * SCALE ))!" "$tmp/plain.png"
+magick "$tmp/shot.png" -colorspace gray \( +clone -statistic median 11x11 \) -compose difference -composite \
+  -auto-level -negate -resize "$(( W * SCALE ))x$(( H * SCALE ))!" "$tmp/local.png"
+pick "$tmp/plain.png" >"$tmp/plain" & pick "$tmp/local.png" >"$tmp/local" & wait
 
-# Pick the word box containing the cursor, else the nearest one within reach.
-word="$(OMP_THREAD_LIMIT=1 tesseract "$tmp/ocr.png" - --psm 11 tsv 2>/dev/null | awk -F'\t' \
-  -v px=$(( (cx - x0) * SCALE )) -v py=$(( (cy - y0) * SCALE )) -v max=$(( MAX_DIST * SCALE )) '
-  NR > 1 && $12 ~ /[[:alpha:]]/ && $11 > 40 {
-    l = $7; t = $8; r = $7 + $9; b = $8 + $10
-    dx = px < l ? l - px : (px > r ? px - r : 0)
-    dy = py < t ? t - py : (py > b ? py - b : 0)
-    d = dx + dy
-    if (d <= max && (best == "" || d < bd)) { bd = d; best = $12 }
-  }
-  END { print best }')"
+# The plain reading is the more accurate one for ordinary text; the local one fills in.
+read_pick() { IFS=$'\t' read -r word at line <"$1" && [[ -n "$word" ]]; }
+read_pick "$tmp/plain" || read_pick "$tmp/local" || exit 0
 
 # Trim surrounding punctuation ("(word)," -> "word"), keep inner ' and -.
-word="$(sed -E "s/^[^[:alnum:]]+//; s/[^[:alnum:]]+$//" <<<"$word")"
-[[ -n "$word" ]] || exit 0
+trim() { sed -E "s/^[^[:alnum:]]+//; s/[^[:alnum:]]+$//"; }
+query="$(trim <<<"$word")"
+[[ -n "$query" ]] || exit 0
+
+# A highlighted phrase wins only if the tap landed on it: some run of words in the line,
+# including the tapped one, reads as the phrase (allowing an OCR slip per word), so a
+# stale highlight elsewhere never takes over.
+if (( $# == 3 )); then sel="$(head -c 400)"
+else sel="$(timeout 1 wl-paste --primary --no-newline --type text/plain 2>/dev/null | head -c 400)"; fi
+sel="$(printf '%s' "$sel" | tr '\n\t' '  ' | tr -s ' ' | sed -e 's/^ //' -e 's/ $//')"
+phrase_at() {  # <pick file>: succeeds when the highlight matches there. The text goes via the environment.
+  [[ -s "$1" ]] || return 1
+  WT_SEL="$sel" awk -F'\t' -v maxw="$MAX_PHRASE_WORDS" '
+    function squash(x) { x = tolower(x); gsub(/[^[:alnum:]]+/, " ", x); gsub(/^ | $/, "", x); return x }
+    function lev(a, b,   i, j, la, lb, p, c, t) {
+      la = length(a); lb = length(b)
+      for (j = 0; j <= lb; j++) p[j] = j
+      for (i = 1; i <= la; i++) {
+        c[0] = i
+        for (j = 1; j <= lb; j++) {
+          t = p[j - 1] + (substr(a, i, 1) != substr(b, j, 1))
+          if (p[j] + 1 < t) t = p[j] + 1
+          if (c[j - 1] + 1 < t) t = c[j - 1] + 1
+          c[j] = t
+        }
+        for (j = 0; j <= lb; j++) p[j] = c[j]
+      }
+      return p[lb]
+    }
+    function near(a, b) { return lev(a, b) <= (length(a) <= 2 ? 0 : 1) }
+    {
+      k = split(squash(ENVIRON["WT_SEL"]), s, " ")
+      if (k < 2 || k > maxw) exit 1
+      # Line words, each mapped back from its squashed tokens to the original word index.
+      n = 0; split($3, words, " ")
+      for (w = 1; w in words; w++) {
+        m = split(squash(words[w]), parts, " ")
+        for (q = 1; q <= m; q++) { n++; tok[n] = parts[q]; of[n] = w }
+      }
+      for (i = 1; i + k - 1 <= n; i++) {
+        if (!(of[i] <= $2 && $2 <= of[i + k - 1])) continue
+        ok = 1
+        for (j = 1; j <= k && ok; j++) if (!near(s[j], tok[i + j - 1])) ok = 0
+        if (ok) exit 0
+      }
+      exit 1
+    }' "$1"
+}
+if [[ -n "$sel" ]] && { phrase_at "$tmp/plain" || phrase_at "$tmp/local"; }; then
+  query="$sel"
+fi
+
+if (( $# == 3 )); then printf '%s\n' "$query"; exit 0; fi
 
 # Through stdin and a private file, never a command line (see scripts/summon).
-printf '%s' "$word" | "$(dirname "${BASH_SOURCE[0]}")/summon"
+printf '%s' "$query" | "$(dirname "${BASH_SOURCE[0]}")/summon"
