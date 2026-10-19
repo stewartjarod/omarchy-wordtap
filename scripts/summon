@@ -2,11 +2,12 @@
 # Word Tap: open the popup on the text read from stdin (up to 400 bytes).
 #
 #   printf '%s' "<word or phrase>" | summon
+#   summon --take        (the popup) print the waiting text and delete it
 #
 # `omarchy-shell shell summon` hands its payload to `qs ipc call` as an argument, where any local user
 # can read it in /proc/<pid>/cmdline, and the text may be a highlighted password. So the text goes
-# into a private file under $XDG_RUNTIME_DIR and the payload only says to read it; the popup reads the
-# file once and empties it.
+# into a private file under $XDG_RUNTIME_DIR and the payload only says to read it; the popup takes it
+# with `summon --take`, which leaves nothing behind.
 set -euo pipefail
 
 # Run under a fixed, trusted PATH and resolve every helper to an absolute path, so a
@@ -18,10 +19,22 @@ pin() {  # <command> -> absolute path (or fail loudly)
   printf '%s' "$p"
 }
 HEAD="$(pin head)"; MKDIR="$(pin mkdir)"; CHMOD="$(pin chmod)"; MKTEMP="$(pin mktemp)"; MV="$(pin mv)"
-OMARCHY_SHELL="$(pin omarchy-shell)"
+RM="$(pin rm)"
 
 plugin_id="stewartjarod.wordtap"
 dir="${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is not set}/wordtap"
+
+if [[ "${1:-}" == --take ]]; then
+  [[ -d "$dir" && ! -L "$dir" && -O "$dir" && -f "$dir/query" && ! -L "$dir/query" ]] || exit 0
+  # Rename first: the text is taken exactly once, and a hand-off arriving meanwhile is never lost.
+  taken="$dir/.taken.$$"
+  "$MV" -f -- "$dir/query" "$taken" 2>/dev/null || exit 0
+  "$HEAD" -c 400 -- "$taken"
+  "$RM" -f -- "$taken"
+  exit 0
+fi
+
+OMARCHY_SHELL="$(pin omarchy-shell)"
 
 # Our own 0700 directory, never through a planted symlink.
 [[ ! -L "$dir" ]] || exit 1

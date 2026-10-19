@@ -46,6 +46,25 @@ test("the shell is summoned with a fixed payload; the text waits in a private fi
   assert.match(read("scripts/summon"), /XDG_RUNTIME_DIR/)
 })
 
+test("summon --take returns the waiting text once, then nothing", () => {
+  const run = fs.mkdtempSync(path.join(os.tmpdir(), "wordtap-run-"))
+  try {
+    fs.mkdirSync(path.join(run, "wordtap"), { mode: 0o700 })
+    const take = () => spawnSync("bash", [path.join(root, "scripts/summon"), "--take"],
+      { env: { XDG_RUNTIME_DIR: run }, encoding: "utf8" })
+    for (const word of ["first", "second"]) {
+      fs.writeFileSync(path.join(run, "wordtap/query"), word, { mode: 0o600 })
+      const r = take()
+      assert.equal(r.status, 0, r.stderr)
+      assert.equal(r.stdout, word)
+      assert.deepEqual(fs.readdirSync(path.join(run, "wordtap")), [])
+    }
+    assert.equal(take().stdout, "")
+  } finally {
+    fs.rmSync(run, { recursive: true, force: true })
+  }
+})
+
 test("the popup passes the query to dict-lookup in the environment", () => {
   const qml = read("WordTap.qml")
   const cmd = qml.match(/lookupProc\.command = \[[^\]]*\]/)

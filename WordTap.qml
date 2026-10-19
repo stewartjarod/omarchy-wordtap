@@ -34,9 +34,8 @@ Item {
   readonly property string pluginId: (manifest && manifest.id) || "stewartjarod.wordtap"
   readonly property string scriptPath: decodeURIComponent(
     Qt.resolvedUrl("scripts/dict-lookup").toString().replace(/^file:\/\//, ""))
-  // Where scripts/summon leaves the text to look up (see open()).
-  readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
-  readonly property string handoffPath: runtimeDir ? runtimeDir + "/wordtap/query" : ""
+  readonly property string summonPath: decodeURIComponent(
+    Qt.resolvedUrl("scripts/summon").toString().replace(/^file:\/\//, ""))
 
   // --- theme tokens (share the [menu] surface, like the emoji/clipboard popups)
   property color background: Color.menu.background
@@ -63,7 +62,8 @@ Item {
     var p = ({})
     try { p = JSON.parse(payloadJson || "{}") } catch (e) { p = ({}) }
     root.opened = true
-    setQuery(String(p.handoff === true ? takeHandoff() : (p.query || "")).slice(0, 400))
+    if (p.handoff === true) takeHandoff()
+    else setQuery(String(p.query || "").slice(0, 400))
     Qt.callLater(function () {
       if (cardLoader.item) cardLoader.item.focusSearch()
     })
@@ -71,22 +71,24 @@ Item {
 
   function close() { root.opened = false }
 
-  // Read the text scripts/summon left in $XDG_RUNTIME_DIR/wordtap/query, then empty the file so it
-  // does not linger.
+  // Take the text scripts/summon left in $XDG_RUNTIME_DIR/wordtap/query (`summon --take` prints it
+  // and deletes the file). A fresh process each time: a cached file read can return the previous word.
+  property bool _takeAgain: false
   function takeHandoff() {
-    if (!root.handoffPath) return ""
-    handoffFile.reload()
-    var t = handoffFile.text()
-    if (t) handoffFile.setText("")
-    return t
+    if (handoffProc.running) { root._takeAgain = true; return }
+    handoffProc.running = true
   }
 
-  FileView {
-    id: handoffFile
-    path: root.handoffPath
-    blockLoading: true
-    preload: false
-    printErrors: false
+  Process {
+    id: handoffProc
+    command: ["/usr/bin/bash", root.summonPath, "--take"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (text.length > 0) root.setQuery(String(text).slice(0, 400))
+    }
+    onRunningChanged: {
+      if (!running && root._takeAgain) { root._takeAgain = false; running = true }
+    }
   }
 
   function dismiss() {
