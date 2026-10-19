@@ -103,6 +103,9 @@ live in the plugin's `defaults.json`.
 - The word you tap or type is sent to `kaikki.org` and `en.wikipedia.org` over HTTPS to fetch its
   entry, unless you remove those sources. Nothing else leaves the machine: no account, no API key,
   no analytics.
+- The text you look up never appears on a command line, where other users on the machine could read it:
+  it reaches the popup through a private file under `$XDG_RUNTIME_DIR/wordtap/` (emptied once read) and the
+  lookup helpers through their environment or input.
 - Reading the word under the pointer takes a 500×70 px screenshot around it, runs OCR locally, and
   deletes the image immediately.
 - The tap watcher reads touch positions from touchpads only; it never reads keyboards and keeps no

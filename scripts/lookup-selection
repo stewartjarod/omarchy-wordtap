@@ -21,8 +21,8 @@ WL_PASTE="$(pin wl-paste)"
 HEAD="$(pin head)"
 TR="$(pin tr)"
 SED="$(pin sed)"
-JQ="$(pin jq)"
 OMARCHY_SHELL="$(pin omarchy-shell)"
+plugin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 plugin_id="stewartjarod.wordtap"
 
@@ -35,8 +35,8 @@ selection="$("$WL_PASTE" --primary --no-newline --type text/plain 2>/dev/null | 
 selection="$(printf '%s' "$selection" | "$TR" '\n\t' '  ' | "$SED" -e 's/^ *//' -e 's/ *$//')"
 
 if [[ -n "$selection" ]]; then
-  payload="$("$JQ" -cn --arg q "$selection" '{query:$q}')"
-  "$OMARCHY_SHELL" -q shell summon "$plugin_id" "$payload"
+  # Through stdin and a private file, never a command line (see scripts/summon).
+  printf '%s' "$selection" | "$plugin_dir/scripts/summon"
 else
   # Nothing highlighted: toggle a blank popup to type into.
   "$OMARCHY_SHELL" -q shell toggle "$plugin_id" '{}'

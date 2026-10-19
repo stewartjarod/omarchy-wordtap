@@ -1,6 +1,8 @@
 # Kaikki.org (machine-readable Wiktionary) JSONL -> Look Up entries.
 #
-#   jq -cs --arg word <word> -f kaikki.jq < word.jsonl
+#   WORDTAP_WORD=<word> jq -cs -f kaikki.jq < word.jsonl
+#
+# The word comes from the environment, not --arg, so it never appears on jq's command line.
 #
 # Input is the slurped array of per-POS records for one English headword. Output
 # is a JSON array of {headword,text} entries: Word parts, then one entry per
@@ -30,7 +32,8 @@ def senses:
   [.senses[]? | select((.tags // []) | index("no-gloss") | not) | .glosses[-1]? // empty]
   | dedupe | .[:6];
 
-. as $recs
+($ENV.WORDTAP_WORD // "") as $word
+| . as $recs
 | [ ($recs | map(parts) | first // empty | {headword: "Word parts", text: .}) ]
 + [ $recs[]
     | (senses) as $s | select($s | length > 0)

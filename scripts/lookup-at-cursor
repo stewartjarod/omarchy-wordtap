@@ -3,10 +3,9 @@
 # it in the popup. Nothing is clicked or selected in the app underneath.
 # Run by scripts/tap-watch on a three-finger tap; also fine to bind to a key.
 #
-# Requires: grim, imagemagick (magick), tesseract + tesseract-data-eng, jq.
+# Requires: grim, imagemagick (magick), tesseract + tesseract-data-eng.
 set -uo pipefail
 
-plugin_id="stewartjarod.wordtap"
 W=500 H=70 SCALE=3   # capture box around the cursor (px) and OCR upscale
 MAX_DIST=10          # how far (screen px) the cursor may be from a word
 
@@ -39,4 +38,5 @@ word="$(OMP_THREAD_LIMIT=1 tesseract "$tmp/ocr.png" - --psm 11 tsv 2>/dev/null |
 word="$(sed -E "s/^[^[:alnum:]]+//; s/[^[:alnum:]]+$//" <<<"$word")"
 [[ -n "$word" ]] || exit 0
 
-omarchy-shell -q shell summon "$plugin_id" "$(jq -cn --arg q "$word" '{query:$q}')"
+# Through stdin and a private file, never a command line (see scripts/summon).
+printf '%s' "$word" | "$(dirname "${BASH_SOURCE[0]}")/summon"

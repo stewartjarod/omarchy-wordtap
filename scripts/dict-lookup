@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Word Tap query engine (derived from Look Up by keegan-sucks, MIT).
 #
-#   dict-lookup "<word or phrase>"
+#   WORDTAP_QUERY="<word or phrase>" dict-lookup      (how the popup runs it)
+#   dict-lookup "<word or phrase>"                    (by hand)
 #
 # Consults every source listed in `sources` (~/.config/wordtap/config.json,
 # else the plugin's defaults.json), in order, and prints a single
@@ -18,6 +19,11 @@
 #   "sections": [ { "id","name","entries":[ {"headword","text"} ] } ],
 #   "suggestions":[ "..." ]        // near matches, when the exact word is missing
 # }
+#
+# The query may be a highlighted password or private message, so it and everything derived from it
+# (candidates, SQL, URLs, results) reach helpers only through stdin or the environment, never their
+# arguments: any local user can read a process's command line in /proc/<pid>/cmdline, while its
+# environment is readable by the same user only. tests/argv.test.js guards this.
 set -euo pipefail
 
 # Run under a fixed, trusted PATH and resolve every helper to an absolute path, so a
@@ -43,11 +49,11 @@ defaults="$plugin_dir/defaults.json"
 user_config="${XDG_CONFIG_HOME:-$HOME/.config}/wordtap/config.json"
 cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/wordtap"
 
-raw_query="${1:-}"
+raw_query="${WORDTAP_QUERY-${1:-}}"
 
 emit() { printf '%s' "$1"; exit 0; }
 fail_empty() {
-  emit "$("$JQ" -cn --arg q "$raw_query" '{query:$q, word:"", found:false, sections:[], suggestions:[]}')"
+  emit "$(WT_Q="$raw_query" "$JQ" -cn '{query:$ENV.WT_Q, word:"", found:false, sections:[], suggestions:[]}')"
 }
 
 # ---- normalize the query -------------------------------------------------
@@ -164,9 +170,9 @@ query_sqlite() {
   local c esc rows
   for c in "$@"; do
     esc="$(sql_escape "$c")"
-    rows="$("$SQLITE3" "$db" \
-      "SELECT json_group_array(json_object('headword', headword, 'text', definition)) \
-       FROM (SELECT headword, definition FROM entries WHERE word='$esc' LIMIT 12);" 2>/dev/null || true)"
+    rows="$(printf '%s\n' "SELECT json_group_array(json_object('headword', headword, 'text', definition)) \
+       FROM (SELECT headword, definition FROM entries WHERE word='$esc' LIMIT 12);" \
+      | "$SQLITE3" "$db" 2>/dev/null || true)"
     if [[ -n "$rows" && "$rows" != "[]" && "$rows" != "null" ]]; then
       printf '%s' "$rows"; return 0
     fi
@@ -182,10 +188,9 @@ suggest_sqlite() {
   local n=${#c}
   for (( p=n; p>=4; p-- )); do
     esc="$(sql_escape "${c:0:p}")"
-    out="$("$SQLITE3" "$db" \
-      "SELECT json_group_array(word) FROM \
+    out="$(printf '%s\n' "SELECT json_group_array(word) FROM \
          (SELECT DISTINCT word FROM entries WHERE word LIKE '$esc%' ORDER BY length(word), word LIMIT 8);" \
-      2>/dev/null || true)"
+      | "$SQLITE3" "$db" 2>/dev/null || true)"
     if [[ -n "$out" && "$out" != "[]" && "$out" != "null" ]]; then
       printf '%s' "$out"; return 0
     fi
@@ -208,7 +213,9 @@ fetch_cached() {
   if [[ -f "$file" && ! -L "$file" && -n "$("$FIND" "$file" -mtime -"$ttl_days" 2>/dev/null)" ]]; then
     printf '%s' "$(<"$file")"; return 0
   fi
-  if body="$("$CURL" -fsS --proto =https -A "WordTap/0.1 (Omarchy shell plugin)" --max-time 3 --max-filesize 8388608 -- "$url" 2>/dev/null)" && [[ -n "$body" ]]; then
+  # The URL holds the word, so curl reads it from a config on stdin (-K -), quoted per curl's rules.
+  local quoted="${url//\\/\\\\}"; quoted="${quoted//\"/\\\"}"
+  if body="$(printf 'url = "%s"\n' "$quoted" | "$CURL" -fsS --proto =https -A "WordTap/0.1 (Omarchy shell plugin)" --max-time 3 --max-filesize 8388608 -K - 2>/dev/null)" && [[ -n "$body" ]]; then
     tmp="$("$MKTEMP" -- "$dir/.fetch.XXXXXX" 2>/dev/null)" && printf '%s' "$body" >"$tmp" && "$MV" -f -- "$tmp" "$file"
     printf '%s' "$body"; return 0
   fi
@@ -220,10 +227,7 @@ fetch_cached() {
 # breakdown and etymology. Tries at most <max_tries> candidates so a miss stays
 # inside the popup's lookup watchdog. Prints a JSON array (possibly empty).
 kaikki_url() {  # <base> <word>
-  local enc p1 p2
-  enc="$("$JQ" -rn --arg s "$2" '$s|@uri')"
-  p1="$("$JQ" -rn --arg s "$2" '$s[0:1]|@uri')"; p2="$("$JQ" -rn --arg s "$2" '$s[0:2]|@uri')"
-  printf '%s/%s/%s/%s.jsonl' "$1" "$p1" "$p2" "$enc"
+  WT_BASE="$1" WT_S="$2" "$JQ" -jn '$ENV.WT_S as $s | "\($ENV.WT_BASE)/\($s[0:1]|@uri)/\($s[0:2]|@uri)/\($s|@uri).jsonl"'
 }
 query_kaikki() {
   local base="$1" ttl_days="$2" max_tries="$3"; shift 3
@@ -231,15 +235,15 @@ query_kaikki() {
   for c in "$@"; do
     (( tries++ < max_tries )) || break
     raw="$(fetch_cached kaikki "$ttl_days" "$(kaikki_url "$base" "$c")")" || continue
-    out="$("$JQ" -cs --arg word "$c" -f "$plugin_dir/scripts/kaikki.jq" <<<"$raw" 2>/dev/null || true)"
+    out="$(WORDTAP_WORD="$c" "$JQ" -cs -f "$plugin_dir/scripts/kaikki.jq" <<<"$raw" 2>/dev/null || true)"
     # An inflection ("berries" = "plural of berry") carries no etymology of its
     # own, so append the lemma's entries when every sense is a form-of.
     lemma="$("$JQ" -rs '[.[].senses[]?] as $s
       | if ($s|length) > 0 and all($s[]; .form_of) then $s[0].form_of[0].word // "" else "" end' <<<"$raw" 2>/dev/null || true)"
     if [[ -n "$lemma" && "$lemma" != "$c" && -n "$out" ]] \
       && lraw="$(fetch_cached kaikki "$ttl_days" "$(kaikki_url "$base" "$lemma")")"; then
-      lout="$("$JQ" -cs --arg word "$lemma" -f "$plugin_dir/scripts/kaikki.jq" <<<"$lraw" 2>/dev/null || true)"
-      [[ -n "$lout" ]] && out="$("$JQ" -cn --argjson a "$out" --argjson b "$lout" '$a + $b' 2>/dev/null || printf '%s' "$out")"
+      lout="$(WORDTAP_WORD="$lemma" "$JQ" -cs -f "$plugin_dir/scripts/kaikki.jq" <<<"$lraw" 2>/dev/null || true)"
+      [[ -n "$lout" ]] && out="$(printf '%s\n%s' "$out" "$lout" | "$JQ" -cs 'add' 2>/dev/null || printf '%s' "$out")"
     fi
     if [[ -n "$out" && "$out" != "[]" && "$out" != "null" ]]; then
       printf '%s' "$out"; return 0
@@ -255,7 +259,7 @@ query_wikipedia() {
   local t raw out
   for t in "$@"; do
     [[ -n "$t" ]] || continue
-    raw="$(fetch_cached wikipedia "$ttl_days" "$base/$("$JQ" -rn --arg s "$t" '$s|gsub(" ";"_")|@uri')")" || continue
+    raw="$(fetch_cached wikipedia "$ttl_days" "$base/$(WT_S="$t" "$JQ" -jn '$ENV.WT_S|gsub(" ";"_")|@uri')")" || continue
     out="$("$JQ" -c 'select(.type == "standard" and (.extract // "") != "")
       | [{headword: (.title + (if .description then " · " + .description else "" end)), text: .extract}]' \
       <<<"$raw" 2>/dev/null || true)"
@@ -279,7 +283,7 @@ query_online() {
       local cased='[]' lower
       [[ "$cased_phrase" != "$norm" ]] && cased="$(query_kaikki "$base" "$ttl" 2 "$cased_phrase" "$cased_first")"
       lower="$(query_kaikki "$base" "$ttl" 3 "${cands[@]}")"
-      "$JQ" -cn --argjson a "$cased" --argjson b "$lower" '$a + $b'
+      printf '%s\n%s' "$cased" "$lower" | "$JQ" -cs 'add'
       ;;
     wikipedia)
       query_wikipedia "$base" "$ttl" "$cased_phrase" "$title_phrase"
@@ -345,16 +349,11 @@ for pid in "${providers[@]}"; do
   if [[ "$entries" != "[]" && "$entries" != "null" ]]; then
     any_found=1
   fi
-  sections="$("$JQ" -c --arg id "$pid" --arg name "$name" --argjson entries "$entries" \
-    '. + [{id:$id, name:$name, entries:$entries}]' <<<"$sections")"
+  sections="$(printf '%s\n%s' "$sections" "$entries" | "$JQ" -cs --arg id "$pid" --arg name "$name" \
+    '.[0] + [{id:$id, name:$name, entries:.[1]}]')"
 done
 
 found=false; [[ "$any_found" == 1 ]] && found=true
 
-"$JQ" -cn \
-  --arg q "$raw_query" \
-  --arg word "$first" \
-  --argjson found "$found" \
-  --argjson sections "$sections" \
-  --argjson suggestions "$suggestions" \
-  '{query:$q, word:$word, found:$found, sections:$sections, suggestions:$suggestions}'
+printf '%s\n%s' "$sections" "$suggestions" | WT_Q="$raw_query" WT_WORD="$first" "$JQ" -cs --argjson found "$found" \
+  '{query:$ENV.WT_Q, word:$ENV.WT_WORD, found:$found, sections:.[0], suggestions:.[1]}'

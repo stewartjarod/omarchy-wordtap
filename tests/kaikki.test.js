@@ -8,7 +8,7 @@ const path = require("path")
 const root = path.join(__dirname, "..")
 function entries(word) {
   const out = execFileSync("sh", ["-c",
-    `jq -cs --arg word "$1" -f scripts/kaikki.jq < tests/fixtures/kaikki/"$1".jsonl`, "sh", word],
+    `WORDTAP_WORD="$1" jq -cs -f scripts/kaikki.jq < tests/fixtures/kaikki/"$1".jsonl`, "sh", word],
     { cwd: root, encoding: "utf8" })
   return JSON.parse(out)
 }

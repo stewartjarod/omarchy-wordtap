@@ -1,0 +1,80 @@
+"use strict"
+// The looked-up text may be a highlighted password, and any local user can read every process's
+// command line in /proc/<pid>/cmdline. So the text, and everything derived from it, must reach
+// helpers through stdin, the environment or a private file, never their arguments.
+// (Reported for Phone Sessions in omacom/omarchy-plugin-marketplace#12100; same class here.)
+const test = require("node:test")
+const assert = require("node:assert/strict")
+const fs = require("fs")
+const os = require("os")
+const path = require("path")
+const { spawnSync } = require("child_process")
+
+const root = path.join(__dirname, "..")
+const read = (f) => fs.readFileSync(path.join(root, f), "utf8")
+const RUNTIME = ["scripts/dict-lookup", "scripts/lookup-at-cursor", "scripts/lookup-selection", "scripts/summon"]
+
+test("jq gets no query-derived --arg/--argjson values", () => {
+  // Only provider metadata and a boolean may go on jq's command line.
+  const allowed = new Set(["$pid", "$name", "$found"])
+  for (const f of RUNTIME)
+    for (const m of read(f).matchAll(/--arg(?:json)?\s+\w+\s+"([^"]*)"/g))
+      assert.ok(allowed.has(m[1]), `${f}: jq argument ${m[0]}`)
+})
+
+test("sqlite3 reads its SQL from stdin", () => {
+  const s = read("scripts/dict-lookup")
+  const calls = [...s.matchAll(/"\$SQLITE3"[^\n]*/g)].map((m) => m[0])
+  assert.ok(calls.length > 0)
+  for (const c of calls) assert.match(c, /^"\$SQLITE3" "\$db"( 2>\/dev\/null.*)?$/, c)
+  assert.doesNotMatch(s, /"\$SQLITE3" "\$db" \\\n\s*"SELECT/)
+})
+
+test("curl reads its URL from a config on stdin", () => {
+  const calls = [...read("scripts/dict-lookup").matchAll(/"\$CURL"[^\n]*/g)].map((m) => m[0])
+  assert.ok(calls.length > 0)
+  for (const c of calls) {
+    assert.match(c, / -K - /, c)
+    assert.doesNotMatch(c, /\$url/, c)
+  }
+})
+
+test("the shell is summoned with a fixed payload; the text waits in a private file", () => {
+  for (const f of RUNTIME)
+    for (const m of read(f).matchAll(/shell summon [^\n]*/g))
+      assert.equal(m[0], `shell summon "$plugin_id" '{"handoff":true}'`, f)
+  assert.match(read("scripts/summon"), /XDG_RUNTIME_DIR/)
+})
+
+test("the popup passes the query to dict-lookup in the environment", () => {
+  const qml = read("WordTap.qml")
+  const cmd = qml.match(/lookupProc\.command = \[[^\]]*\]/)
+  assert.ok(cmd)
+  assert.doesNotMatch(cmd[0], /_pending|query/i)
+  assert.match(qml, /lookupProc\.environment = \(\{ WORDTAP_QUERY: root\._pending \}\)/)
+})
+
+test("dict-lookup takes the query from WORDTAP_QUERY (and still from $1 by hand)", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wordtap-argv-"))
+  try {
+    fs.mkdirSync(path.join(home, "config/wordtap"), { recursive: true })
+    fs.writeFileSync(path.join(home, "config/wordtap/config.json"), '{"sources":["webster1913"]}')
+    const env = { HOME: home, XDG_CONFIG_HOME: path.join(home, "config"), XDG_CACHE_HOME: path.join(home, "cache") }
+    const lookup = (args, extra) => {
+      const r = spawnSync("bash", [path.join(root, "scripts/dict-lookup"), ...args], { env: { ...env, ...extra }, encoding: "utf8" })
+      assert.equal(r.status, 0, r.stderr)
+      return JSON.parse(r.stdout)
+    }
+    const a = lookup([], { WORDTAP_QUERY: "Running," })
+    assert.equal(a.query, "Running,")
+    assert.equal(a.word, "running")
+    assert.equal(a.found, true)
+    assert.equal(a.sections[0].id, "webster1913")
+    assert.ok(a.sections[0].entries.length > 0)
+    assert.equal(lookup(["serendipitous"], {}).query, "serendipitous")
+    const none = lookup([], { WORDTAP_QUERY: " ;; " })
+    assert.deepEqual(none, { query: " ;; ", word: "", found: false, sections: [], suggestions: [] })
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})

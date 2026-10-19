@@ -1,7 +1,8 @@
 // Word Tap: a macOS Dictionary-style lookup popup for Omarchy.
 //
-// Summoned with {query} by scripts/lookup-at-cursor (three-finger tap, run by
-// Service.qml's tap watcher) or scripts/lookup-selection (a hotkey). It asks
+// Summoned with {handoff:true} by scripts/summon, on behalf of scripts/lookup-at-cursor
+// (three-finger tap, run by Service.qml's tap watcher) or scripts/lookup-selection (a hotkey);
+// the text itself waits in a private file, never on a command line. It asks
 // scripts/dict-lookup to consult every configured source in order and renders
 // each as its own section. Everything is drawn with the shell's theme tokens,
 // so it follows the active Omarchy theme. Esc, click-away and right-click
@@ -33,6 +34,9 @@ Item {
   readonly property string pluginId: (manifest && manifest.id) || "stewartjarod.wordtap"
   readonly property string scriptPath: decodeURIComponent(
     Qt.resolvedUrl("scripts/dict-lookup").toString().replace(/^file:\/\//, ""))
+  // Where scripts/summon leaves the text to look up (see open()).
+  readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
+  readonly property string handoffPath: runtimeDir ? runtimeDir + "/wordtap/query" : ""
 
   // --- theme tokens (share the [menu] surface, like the emoji/clipboard popups)
   property color background: Color.menu.background
@@ -59,13 +63,31 @@ Item {
     var p = ({})
     try { p = JSON.parse(payloadJson || "{}") } catch (e) { p = ({}) }
     root.opened = true
-    setQuery(String(p.query || "").slice(0, 400))
+    setQuery(String(p.handoff === true ? takeHandoff() : (p.query || "")).slice(0, 400))
     Qt.callLater(function () {
       if (cardLoader.item) cardLoader.item.focusSearch()
     })
   }
 
   function close() { root.opened = false }
+
+  // Read the text scripts/summon left in $XDG_RUNTIME_DIR/wordtap/query, then empty the file so it
+  // does not linger.
+  function takeHandoff() {
+    if (!root.handoffPath) return ""
+    handoffFile.reload()
+    var t = handoffFile.text()
+    if (t) handoffFile.setText("")
+    return t
+  }
+
+  FileView {
+    id: handoffFile
+    path: root.handoffPath
+    blockLoading: true
+    preload: false
+    printErrors: false
+  }
 
   function dismiss() {
     root.close()
@@ -102,8 +124,10 @@ Item {
 
   function _launch() {
     if (root._pending.trim().length === 0) { root.loading = false; return }
-    // Absolute interpreter path: never resolve `bash` through an inherited PATH.
-    lookupProc.command = ["/usr/bin/bash", root.scriptPath, root._pending]
+    // Absolute interpreter path: never resolve `bash` through an inherited PATH. The query goes in the
+    // environment, which only this user can read; any local user can read a command line.
+    lookupProc.environment = ({ WORDTAP_QUERY: root._pending })
+    lookupProc.command = ["/usr/bin/bash", root.scriptPath]
     watchdog.restart()
     lookupProc.running = true
   }
