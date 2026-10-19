@@ -6,6 +6,11 @@ All notable changes to this plugin are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-19
+
+### Added
+- other languages: foreign words and accented OCR
+
 ## [0.2.1] - 2026-10-19
 
 ### Fixed
@@ -35,7 +40,8 @@ All notable changes to this plugin are listed here. The format follows
 - pick the right word on scaled outputs and exit the watcher with the shell
 - **ci:** keep the repo URL out of curl calls and ignore unresolved Quickshell types in qmllint
 
-[Unreleased]: https://github.com/stewartjarod/omarchy-wordtap/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/stewartjarod/omarchy-wordtap/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/stewartjarod/omarchy-wordtap/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/stewartjarod/omarchy-wordtap/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/stewartjarod/omarchy-wordtap/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/stewartjarod/omarchy-wordtap/compare/v0.1.1...v0.1.2
