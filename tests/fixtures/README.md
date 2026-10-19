@@ -7,4 +7,5 @@
   the first three senses' `glosses`/`tags`/`form_of`.
 - `phrase/*.png`: synthetic, rendered with ImageMagick/Pango: one line of made-up text with
   "New York City" highlighted, in a light monospace and a dark sans-serif theme at the small size a
-  scale-1 4K screen shows. No screenshots of a real desktop.
+  scale-1 4K screen shows; `accents.png` the same with "Hôtel de Ville" highlighted. No screenshots of
+  a real desktop.

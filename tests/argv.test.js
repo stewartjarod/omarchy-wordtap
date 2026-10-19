@@ -91,6 +91,10 @@ test("dict-lookup takes the query from WORDTAP_QUERY (and still from $1 by hand)
     assert.equal(a.sections[0].id, "webster1913")
     assert.ok(a.sections[0].entries.length > 0)
     assert.equal(lookup(["serendipitous"], {}).query, "serendipitous")
+    // Accented letters are letters ("hôtel", not "h tel"), whatever the caller's locale.
+    const acc = lookup([], { WORDTAP_QUERY: "Hôtel de Ville", LC_ALL: "C" })
+    assert.equal(acc.query, "Hôtel de Ville")
+    assert.equal(acc.word, "hôtel")
     const none = lookup([], { WORDTAP_QUERY: " ;; " })
     assert.deepEqual(none, { query: " ;; ", word: "", found: false, sections: [], suggestions: [] })
   } finally {

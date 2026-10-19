@@ -41,3 +41,9 @@ for (const [shot, at] of Object.entries(AT)) {
     assert.equal(tap(shot, at.Berlin, "the Berlin Airlift"), "Berlin")
   })
 }
+
+test("accents.png: an accented phrase, read without its accent, still matches", { skip }, () => {
+  const at = { Hotel: [48, 8], de: [75, 8], Ville: [98, 8], Limoges: [153, 10] }
+  for (const w of ["Hotel", "de", "Ville"]) assert.equal(tap("accents.png", at[w], "Hôtel de Ville"), "Hôtel de Ville", w)
+  assert.equal(tap("accents.png", at.Limoges, "Hôtel de Ville"), "Limoges")
+})

@@ -14,6 +14,8 @@
 #
 # Requires: grim, imagemagick (magick), tesseract + tesseract-data-eng, wl-paste, jq.
 set -uo pipefail
+# A UTF-8 locale, whatever the user's, so awk compares "Hôtel" letter by letter.
+export LC_ALL=C.UTF-8
 
 W=500 H=70 SCALE=3   # capture box around the cursor (px) and OCR upscale
 MAX_DIST=10          # how far (screen px) the cursor may be from a word
@@ -93,8 +95,8 @@ query="$(trim <<<"$word")"
 [[ -n "$query" ]] || exit 0
 
 # A highlighted phrase wins only if the tap landed on it: some run of words in the line,
-# including the tapped one, reads as the phrase (allowing an OCR slip per word), so a
-# stale highlight elsewhere never takes over.
+# including the tapped one, reads as the phrase (allowing OCR slips: one character in four),
+# so a stale highlight elsewhere never takes over.
 if (( $# == 3 )); then sel="$(head -c 400)"
 else sel="$(timeout 1 wl-paste --primary --no-newline --type text/plain 2>/dev/null | head -c 400)"; fi
 sel="$(printf '%s' "$sel" | tr '\n\t' '  ' | tr -s ' ' | sed -e 's/^ //' -e 's/ $//')"
@@ -117,21 +119,24 @@ phrase_at() {  # <pick file>: succeeds when the highlight matches there. The tex
       }
       return p[lb]
     }
-    function near(a, b) { return lev(a, b) <= (length(a) <= 2 ? 0 : 1) }
     {
-      k = split(squash(ENVIRON["WT_SEL"]), s, " ")
+      want = squash(ENVIRON["WT_SEL"]); k = split(want, s, " ")
       if (k < 2 || k > maxw) exit 1
+      budget = int(length(want) / 4); if (budget < 1) budget = 1
       # Line words, each mapped back from its squashed tokens to the original word index.
       n = 0; split($3, words, " ")
       for (w = 1; w in words; w++) {
         m = split(squash(words[w]), parts, " ")
         for (q = 1; q <= m; q++) { n++; tok[n] = parts[q]; of[n] = w }
       }
-      for (i = 1; i + k - 1 <= n; i++) {
-        if (!(of[i] <= $2 && $2 <= of[i + k - 1])) continue
-        ok = 1
-        for (j = 1; j <= k && ok; j++) if (!near(s[j], tok[i + j - 1])) ok = 0
-        if (ok) exit 0
+      # Runs of k-1..k+1 words (OCR splits and merges words) that include the tapped one.
+      for (size = k - 1; size <= k + 1; size++) {
+        if (size < 1) continue
+        for (i = 1; i + size - 1 <= n; i++) {
+          if (!(of[i] <= $2 && $2 <= of[i + size - 1])) continue
+          got = tok[i]; for (j = i + 1; j < i + size; j++) got = got " " tok[j]
+          if (lev(want, got) <= budget) exit 0
+        }
       }
       exit 1
     }' "$1"
